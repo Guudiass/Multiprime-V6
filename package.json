@@ -1,6 +1,6 @@
 {
   "name": "multiprime-v6",
-  "version": "6.0.0",
+  "version": "6.0.1",
   "description": "MultiPrime V6 - Navegador Seguro",
   "main": "main.js",
   "scripts": {
@@ -29,9 +29,7 @@
       "target": [
         {
           "target": "nsis",
-          "arch": [
-            "x64"
-          ]
+          "arch": ["x64"]
         }
       ],
       "icon": "icon.ico"
@@ -54,7 +52,7 @@
     "electron-updater": "^6.3.0"
   },
   "devDependencies": {
-    "electron": "^41.0.2",
+    "electron": "^33.0.0",
     "electron-builder": "^25.0.0"
   }
 }

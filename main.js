@@ -25,6 +25,9 @@ try {
 // ===================================================================
 const TOOLBAR_HEIGHT = 44;
 
+// Detectar se estamos rodando dentro de um .asar (app instalado via .exe)
+const IS_PACKAGED = __dirname.includes('.asar');
+
 // ★ URL DO SEU SITE LOVABLE (alterar para a URL real)
 const APP_URL = 'https://multiprime.designerprime.com.br';
 
@@ -220,8 +223,13 @@ async function verifyFileIntegrityRemote() {
  * Chamada ANTES de abrir qualquer navegador.
  */
 async function ensureFileIntegrity() {
+    // Dentro do .asar, os arquivos são read-only — não podem ser adulterados.
+    if (IS_PACKAGED) {
+        console.log('[SEGURANÇA] ✅ Modo asar — integridade garantida pelo pacote.');
+        return true;
+    }
+
     // Verificação local rápida — apenas BLOQUEAR, nunca restaurar.
-    // Restaurar aqui apagaria a evidência de violação antes do boot capture.
     const localResult = verifyFileIntegrityLocal();
 
     if (!localResult.ok) {
@@ -1622,12 +1630,16 @@ function startApp() {
         await limparParticoesAntigas();
 
         // Verificação inicial: APENAS LOGAR, NÃO RESTAURAR.
-        const result = verifyFileIntegrityLocal();
-        if (!result.ok) {
-            console.warn(`[SEGURANÇA] ⚠️ ADULTERAÇÃO DETECTADA NO BOOT: ${result.tampered?.join(', ')}`);
-            console.warn('[SEGURANÇA] Arquivos NÃO serão restaurados agora — Lovable vai verificar.');
+        if (!IS_PACKAGED) {
+            const result = verifyFileIntegrityLocal();
+            if (!result.ok) {
+                console.warn(`[SEGURANÇA] ⚠️ ADULTERAÇÃO DETECTADA NO BOOT: ${result.tampered?.join(', ')}`);
+                console.warn('[SEGURANÇA] Arquivos NÃO serão restaurados agora — Lovable vai verificar.');
+            } else {
+                console.log('[SEGURANÇA] ✅ Verificação inicial OK.');
+            }
         } else {
-            console.log('[SEGURANÇA] ✅ Verificação inicial OK.');
+            console.log('[SEGURANÇA] ✅ Modo asar — arquivos protegidos pelo pacote.');
         }
 
         for (const listener of app.listeners('login')) app.removeListener('login', listener);
@@ -1697,12 +1709,23 @@ function startApp() {
 // ===================================================================
 // PONTO DE ENTRADA
 // ===================================================================
+
 async function initialize() {
+
+    if (IS_PACKAGED) {
+        // ★ APP INSTALADO (dentro do .asar): NÃO usar o JS file updater.
+        // O electron-updater cuida de atualizar TUDO (JS + Electron) via GitHub Releases.
+        // O .asar é read-only, então não podemos escrever arquivos lá dentro.
+        console.log('[SISTEMA] Modo instalado (asar). Atualizações via electron-updater.');
+        startApp();
+        return;
+    }
+
+    // ★ MODO DESENVOLVIMENTO (npm start): usar o JS file updater normalmente
+    console.log('[SISTEMA] Modo desenvolvimento. JS updater ativo.');
     const filesAreMissing = criticalFilePaths.some(p => !fs.existsSync(p));
 
     if (filesAreMissing) {
-        // PRIMEIRA EXECUÇÃO: precisa baixar para o app funcionar.
-        // Isso é OK — não tem nada para "violar" ainda.
         console.log('Arquivos essenciais não encontrados. Instalando...');
         try {
             await performAppUpdate(true);
@@ -1715,17 +1738,11 @@ async function initialize() {
             });
         }
     } else {
-        // EXECUÇÃO NORMAL: inicia o app com os arquivos que ESTÃO no disco.
         startApp();
         setTimeout(async () => {
             try {
                 await performAppUpdate(false);
 
-                // ★ Auto-update concluído: sinalizar re-captura para o preload
-                // Isso permite que o app funcione após atualização legítima
-                // (ex: app desatualizado → updater restaura → deve funcionar)
-                // Segurança: webContents.send() só pode ser chamado do main process.
-                // O usuário NÃO consegue disparar isso pelo console.
                 const allWindows = BrowserWindow.getAllWindows();
                 for (const win of allWindows) {
                     if (!win.isDestroyed()) {
@@ -1733,11 +1750,10 @@ async function initialize() {
                     }
                 }
                 console.log('[Updater BG] Re-captura enviada para ' + allWindows.length + ' janela(s).');
-
             } catch (err) {
                 console.error('[Updater BG] Erro:', err);
             }
-        }, 10000); // 10s — dar tempo do boot capture antes de alterar arquivos
+        }, 10000);
     }
 }
 

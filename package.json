@@ -1,7 +1,8 @@
 {
   "name": "multiprime-v6",
-  "version": "6.1.0",
+  "version": "6.1.1",
   "description": "MultiPrime - Designer Prime",
+  "author": "Designer Prime <contato@designerprime.com.br>",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

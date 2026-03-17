@@ -538,6 +538,7 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
             preload: path.join(__dirname, 'preload-secure.js'),
             contextIsolation: true,
             nodeIntegration: false,
+            sandbox: false,
             devTools: true
         }
     });
@@ -1311,6 +1312,7 @@ function startApp() {
                 preload: path.join(__dirname, 'preload.js'),
                 contextIsolation: false,  // Necessário para window.abrirNavegador
                 nodeIntegration: false,
+                sandbox: false,           // Necessário para require('crypto') no preload
                 devTools: true
             }
         });

@@ -1,7 +1,7 @@
 {
   "name": "multiprime-v6",
-  "version": "6.0.6",
-  "description": "MultiPrime V6 - Navegador Seguro",
+  "version": "6.0.7",
+  "description": "MultiPrime - Designer Prime",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

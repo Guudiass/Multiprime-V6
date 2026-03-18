@@ -9,7 +9,25 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Primeiro: criar o release vazio
+  create-release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Depois: buildar e enviar para o release existente
   build:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -38,20 +56,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libnotify-dev libnss3 libxss1 libasound2-dev rpm dpkg fakeroot imagemagick
 
-      - name: Convert icon for Linux
-        if: matrix.platform == 'linux'
+      - name: Convert icon for Linux/Mac
+        if: matrix.platform != 'win'
         run: |
           if [ ! -f icon.png ] && [ -f icon.ico ]; then
-            convert icon.ico[0] -resize 1024x1024 icon.png
-            echo "icon.png gerado a partir do icon.ico"
-          fi
-
-      - name: Convert icon for Mac
-        if: matrix.platform == 'mac'
-        run: |
-          if [ ! -f icon.png ] && [ -f icon.ico ]; then
-            sips -s format png icon.ico --out icon.png --resampleWidth 1024 2>/dev/null || true
-            echo "icon.png gerado para Mac"
+            if command -v convert &> /dev/null; then
+              convert icon.ico[0] -resize 1024x1024 icon.png
+            elif command -v sips &> /dev/null; then
+              sips -s format png icon.ico --out icon.png --resampleWidth 1024 2>/dev/null || true
+            fi
           fi
 
       - name: Install dependencies

@@ -1320,7 +1320,9 @@ function startApp() {
         for (const listener of app.listeners('login')) app.removeListener('login', listener);
         app.on('login', nossoManipuladorDeLogin);
 
-        // ★ CRIAR JANELA PRINCIPAL — frameless com titlebar personalizada
+        // ★ CRIAR JANELA PRINCIPAL — titlebar própria + Lovable em BrowserView
+        const MAIN_BAR_HEIGHT = 36;
+
         const mainWindow = new BrowserWindow({
             width: 1280,
             height: 720,
@@ -1329,7 +1331,77 @@ function startApp() {
             icon: path.join(__dirname, 'icon.ico'),
             title: 'MultiPrime',
             frame: false,
-            backgroundColor: '#0f0f0f',
+            show: false,
+            backgroundColor: '#111111',
+            webPreferences: {
+                contextIsolation: false,
+                nodeIntegration: true,  // Seguro: só carrega nosso HTML inline
+                devTools: IS_DEV
+            }
+        });
+
+        // Remover menu
+        Menu.setApplicationMenu(null);
+
+        // Carregar titlebar inline (sem arquivo HTML extra)
+        // Converter icon.ico para base64 (funciona dentro de data: URL)
+        let iconBase64 = '';
+        try {
+            const iconBuffer = fs.readFileSync(path.join(__dirname, 'icon.ico'));
+            iconBase64 = 'data:image/x-icon;base64,' + iconBuffer.toString('base64');
+        } catch (e) {
+            console.warn('[SISTEMA] icon.ico não encontrado, usando fallback');
+        }
+
+        mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!DOCTYPE html>
+<html><head><style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  height: ${MAIN_BAR_HEIGHT}px;
+  background: linear-gradient(180deg, #1a1a1a 0%, #111111 100%);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 12px;
+  -webkit-app-region: drag;
+  user-select: none;
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+.title {
+  display: flex; align-items: center; color: rgba(255,255,255,0.7);
+}
+.title img { width: 18px; height: 18px; margin-right: 8px; }
+.title span { font-weight: 500; letter-spacing: 0.3px; }
+.controls { display: flex; gap: 4px; -webkit-app-region: no-drag; }
+.btn {
+  width: 28px; height: 28px;
+  background: transparent; border: none; border-radius: 6px;
+  color: rgba(255,255,255,0.55); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.9); }
+.close:hover { background: #e81123; color: white; }
+</style></head><body>
+<div class="title">
+  <img src="${iconBase64}" alt="">
+  <span>MultiPrime</span>
+</div>
+<div class="controls">
+  <button class="btn" onclick="require('electron').ipcRenderer.send('main-minimize')">
+    <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="btn" onclick="require('electron').ipcRenderer.send('main-maximize')">
+    <svg width="12" height="12" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+  </button>
+  <button class="btn close" onclick="require('electron').ipcRenderer.send('main-close')">
+    <svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</div>
+</body></html>`));
+
+        // BrowserView para o Lovable — carrega ABAIXO da titlebar
+        const lovableView = new BrowserView({
             webPreferences: {
                 preload: path.join(__dirname, 'preload.js'),
                 contextIsolation: false,
@@ -1339,11 +1411,29 @@ function startApp() {
             }
         });
 
-        // ★ Remover menu bar completamente
-        Menu.setApplicationMenu(null);
+        mainWindow.setBrowserView(lovableView);
 
-        mainWindow.loadURL(APP_URL);
-        mainWindow.maximize();
+        // Posicionar abaixo da titlebar
+        const updateLovableBounds = () => {
+            if (mainWindow.isDestroyed()) return;
+            const [w, h] = mainWindow.getSize();
+            lovableView.setBounds({ x: 0, y: MAIN_BAR_HEIGHT, width: w, height: h - MAIN_BAR_HEIGHT });
+        };
+
+        updateLovableBounds();
+        lovableView.setAutoResize({ width: true, height: true });
+
+        mainWindow.on('resize', () => setTimeout(updateLovableBounds, 50));
+        mainWindow.on('maximize', () => setTimeout(updateLovableBounds, 50));
+        mainWindow.on('unmaximize', () => setTimeout(updateLovableBounds, 50));
+
+        lovableView.webContents.loadURL(APP_URL);
+
+        // Mostrar só quando o Lovable carregar (evita flash)
+        lovableView.webContents.once('did-finish-load', () => {
+            mainWindow.maximize();
+            mainWindow.show();
+        });
 
         console.log(`[SISTEMA] Janela principal criada. Carregando: ${APP_URL}`);
         console.log('[SISTEMA] Aplicação pronta. Arquitetura BrowserView ativa.');

@@ -2,7 +2,7 @@
 // main.js — MultiPrime V6 (Electron Puro)
 // Sem Nativefier. Janela principal carrega o Lovable diretamente.
 
-const { app, BrowserWindow, BrowserView, ipcMain, session, shell, dialog } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, shell, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -27,6 +27,9 @@ const TOOLBAR_HEIGHT = 44;
 
 // ★ URL DO SEU SITE LOVABLE (alterar para a URL real)
 const APP_URL = 'https://multiprime.designerprime.com.br';
+
+// Modo desenvolvimento (npm start) vs produção (instalado)
+const IS_DEV = !__dirname.includes('.asar');
 
 const CONFIG = {
     WINDOW_DEFAULTS: { width: 1280, height: 720, minWidth: 800, minHeight: 600 },
@@ -524,7 +527,7 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
             preload: path.join(__dirname, 'preload-toolbar.js'),
             contextIsolation: true,
             nodeIntegration: false,
-            devTools: true
+            devTools: IS_DEV
         }
     });
 
@@ -539,7 +542,7 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: false,
-            devTools: true
+            devTools: IS_DEV
         }
     });
 
@@ -683,7 +686,8 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
                 webPreferences: {
                     session: isolatedSession,
                     contextIsolation: true,
-                    nodeIntegration: false
+                    nodeIntegration: false,
+                    devTools: IS_DEV
                 }
             }
         };
@@ -776,15 +780,17 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
         windowViews.delete(mainWindow.id);
     });
 
-    // ★ F12: Abrir DevTools da BrowserView em janela DESTACADA
-    mainWindow.webContents.on('before-input-event', (event, input) => {
-        if (input.key === 'F12' && input.type === 'keyDown') {
-            event.preventDefault();
-            if (!view.webContents.isDestroyed()) {
-                view.webContents.openDevTools({ mode: 'detach' });
+    // ★ F12: Abrir DevTools APENAS em modo desenvolvimento
+    if (IS_DEV) {
+        mainWindow.webContents.on('before-input-event', (event, input) => {
+            if (input.key === 'F12' && input.type === 'keyDown') {
+                event.preventDefault();
+                if (!view.webContents.isDestroyed()) {
+                    view.webContents.openDevTools({ mode: 'detach' });
+                }
             }
-        }
-    });
+        });
+    }
 
     // Mostrar quando pronto
     mainWindow.once('ready-to-show', () => mainWindow.show());
@@ -991,6 +997,22 @@ ipcMain.on('maximize-secure-window', (e) => {
 
 ipcMain.on('close-secure-window', (e) => {
     BrowserWindow.fromWebContents(e.sender)?.close();
+});
+
+// ★ IPC para a janela principal (titlebar personalizada)
+ipcMain.on('main-minimize', (e) => {
+    BrowserWindow.fromWebContents(e.sender)?.minimize();
+});
+ipcMain.on('main-maximize', (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    if (w) w.isMaximized() ? w.unmaximize() : w.maximize();
+});
+ipcMain.on('main-close', (e) => {
+    BrowserWindow.fromWebContents(e.sender)?.close();
+});
+ipcMain.on('main-is-maximized', (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    e.returnValue = w ? w.isMaximized() : false;
 });
 
 ipcMain.on('open-download', (e, p) => { if (p) shell.openPath(p).catch(() => {}); });
@@ -1298,24 +1320,27 @@ function startApp() {
         for (const listener of app.listeners('login')) app.removeListener('login', listener);
         app.on('login', nossoManipuladorDeLogin);
 
-        // ★ CRIAR JANELA PRINCIPAL — carrega o Lovable
-        // (substitui o que o Nativefier fazia automaticamente)
+        // ★ CRIAR JANELA PRINCIPAL — frameless com titlebar personalizada
         const mainWindow = new BrowserWindow({
             width: 1280,
             height: 720,
             minWidth: 800,
             minHeight: 600,
             icon: path.join(__dirname, 'icon.ico'),
-            title: 'MultiPrime V6',
-            autoHideMenuBar: true,
+            title: 'MultiPrime',
+            frame: false,
+            backgroundColor: '#0f0f0f',
             webPreferences: {
                 preload: path.join(__dirname, 'preload.js'),
-                contextIsolation: false,  // Necessário para window.abrirNavegador
+                contextIsolation: false,
                 nodeIntegration: false,
-                sandbox: false,           // Necessário para require('crypto') no preload
-                devTools: true
+                sandbox: false,
+                devTools: IS_DEV
             }
         });
+
+        // ★ Remover menu bar completamente
+        Menu.setApplicationMenu(null);
 
         mainWindow.loadURL(APP_URL);
         mainWindow.maximize();

@@ -1,6 +1,6 @@
 {
   "name": "multiprime-v6",
-  "version": "6.1.8",
+  "version": "6.1.9",
   "description": "MultiPrime - Designer Prime",
   "author": "Designer Prime <contato@designerprime.com.br>",
   "main": "main.js",
@@ -40,6 +40,10 @@
         {
           "target": "dmg",
           "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
         }
       ],
       "icon": "icon.png",
@@ -65,7 +69,6 @@
       "owner": "Guudiass",
       "repo": "Multiprime-V6",
       "releaseType": "release"
-	  
     },
     "asar": true
   },

@@ -46,10 +46,7 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "entitlements.mac.plist",
-      "entitlementsInherit": "entitlements.mac.plist",
-      "notarize": {
-        "teamId": "4347SLF6M4"
-      }
+      "entitlementsInherit": "entitlements.mac.plist"
     },
     "linux": {
       "target": [

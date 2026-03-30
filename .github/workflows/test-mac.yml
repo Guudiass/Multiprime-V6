@@ -28,13 +28,54 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build Mac (sem publicar)
+      - name: Build Mac (assinar, sem notarizar)
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: npx electron-builder --mac --publish never
 
-      - name: Upload DMG para download
+      - name: Notarizar manualmente
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "=== Arquivos gerados ==="
+          ls -la dist/*.dmg dist/*.zip 2>/dev/null || true
+
+          echo ""
+          echo "=== Notarizando DMG x64 ==="
+          DMG_X64=$(ls dist/*-6*.dmg 2>/dev/null | grep -v arm64 | head -1)
+          if [ -n "$DMG_X64" ]; then
+            echo "Enviando $DMG_X64 para Apple..."
+            xcrun notarytool submit "$DMG_X64" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 15m \
+              --verbose 2>&1 || true
+            echo ""
+            echo "=== Stapling ==="
+            xcrun stapler staple "$DMG_X64" 2>&1 || true
+          fi
+
+          echo ""
+          echo "=== Notarizando DMG arm64 ==="
+          DMG_ARM=$(ls dist/*arm64*.dmg 2>/dev/null | head -1)
+          if [ -n "$DMG_ARM" ]; then
+            echo "Enviando $DMG_ARM para Apple..."
+            xcrun notarytool submit "$DMG_ARM" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 15m \
+              --verbose 2>&1 || true
+            echo ""
+            echo "=== Stapling ==="
+            xcrun stapler staple "$DMG_ARM" 2>&1 || true
+          fi
+
+      - name: Upload para download
         uses: actions/upload-artifact@v4
         with:
           name: multiprime-mac-test

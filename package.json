@@ -24,6 +24,7 @@
       "preload-secure.js",
       "preload-toolbar.js",
       "toolbar.html",
+      "entitlements.mac.plist",
       "icon.*"
     ],
     "win": {
@@ -41,7 +42,14 @@
         { "target": "zip", "arch": ["x64", "arm64"] }
       ],
       "icon": "icon.png",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
+      "notarize": {
+        "teamId": "4347SLF6M4"
+      }
     },
     "linux": {
       "target": [

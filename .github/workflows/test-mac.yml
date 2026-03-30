@@ -1,0 +1,47 @@
+name: Test Mac Signing
+
+on:
+  workflow_dispatch:  # Roda manualmente pelo botão no GitHub
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test-mac:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Convert icon
+        run: |
+          if [ ! -f icon.png ] && [ -f icon.ico ]; then
+            sips -s format png icon.ico --out icon.png --resampleWidth 1024 2>/dev/null || true
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Mac (sem publicar)
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --publish never
+
+      - name: Upload DMG para download
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiprime-mac-test
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          retention-days: 3

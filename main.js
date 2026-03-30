@@ -13,8 +13,8 @@ const crypto = require('crypto');
 let autoUpdater;
 try {
     autoUpdater = require('electron-updater').autoUpdater;
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.autoDownload = false;  // Controlar manualmente
+    autoUpdater.autoInstallOnAppQuit = false;
 } catch (e) {
     console.warn('[APP-UPDATER] electron-updater não disponível (modo dev):', e.message);
     autoUpdater = null;
@@ -1441,71 +1441,128 @@ body {
         mainWindow.on('enter-full-screen', () => setTimeout(updateLovableBounds, 50));
         mainWindow.on('leave-full-screen', () => setTimeout(updateLovableBounds, 50));
 
-        lovableView.webContents.loadURL(APP_URL);
+        // Função para carregar o Lovable e configurar links externos
+        const loadLovable = () => {
+            lovableView.webContents.loadURL(APP_URL);
 
-        // ★ LINKS EXTERNOS: abrir no navegador padrão do usuário (Chrome/Edge/etc)
-        // Qualquer link que NÃO seja do Lovable abre fora do Electron
-        const lovableHost = new URL(APP_URL).hostname;
+            const lovableHost = new URL(APP_URL).hostname;
 
-        lovableView.webContents.setWindowOpenHandler(({ url }) => {
-            try {
-                const host = new URL(url).hostname;
-                if (host !== lovableHost) {
-                    console.log(`[EXTERNO] Abrindo no navegador: ${url}`);
-                    shell.openExternal(url);
-                    return { action: 'deny' };
+            lovableView.webContents.setWindowOpenHandler(({ url }) => {
+                try {
+                    const host = new URL(url).hostname;
+                    if (host !== lovableHost) {
+                        console.log(`[EXTERNO] Abrindo no navegador: ${url}`);
+                        shell.openExternal(url);
+                        return { action: 'deny' };
+                    }
+                } catch {}
+                return { action: 'deny' };
+            });
+
+            lovableView.webContents.on('will-navigate', (e, url) => {
+                try {
+                    const host = new URL(url).hostname;
+                    if (host !== lovableHost) {
+                        e.preventDefault();
+                        console.log(`[EXTERNO] Redirecionando para navegador: ${url}`);
+                        shell.openExternal(url);
+                    }
+                } catch {}
+            });
+
+            lovableView.webContents.once('did-finish-load', () => {
+                if (!mainWindow.isVisible()) {
+                    mainWindow.maximize();
+                    mainWindow.show();
                 }
-            } catch {}
-            return { action: 'deny' }; // Bloquear popups mesmo internos
-        });
+            });
+        };
 
-        lovableView.webContents.on('will-navigate', (e, url) => {
-            try {
-                const host = new URL(url).hostname;
-                if (host !== lovableHost) {
-                    e.preventDefault();
-                    console.log(`[EXTERNO] Redirecionando para navegador: ${url}`);
-                    shell.openExternal(url);
-                }
-            } catch {}
-        });
+        // Tela de update (só aparece se tiver atualização)
+        const showUpdateScreen = (message, percent) => {
+            if (lovableView.webContents.isDestroyed()) return;
+            if (!mainWindow.isVisible()) { mainWindow.maximize(); mainWindow.show(); }
+            lovableView.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!DOCTYPE html>
+<html><head><style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+    background: #0f0f0f; color: white;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    height: 100vh; text-align: center;
+}
+.logo { margin-bottom: 24px; opacity: 0.7; }
+h1 { font-size: 18px; font-weight: 500; margin-bottom: 10px; color: rgba(255,255,255,0.85); }
+p { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 20px; }
+.bar-bg { width: 280px; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden; }
+.bar-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #60a5fa); border-radius: 2px; width: ${percent}%; transition: width 0.3s ease; }
+.pct { font-size: 12px; color: rgba(255,255,255,0.3); margin-top: 6px; }
+</style></head><body>
+<div class="logo"><svg width="40" height="40" viewBox="0 0 24 24"><path d="M5 20h14v2H5v-2zm1-2h12l1-4h-3V8h1V4h-2V2H10v2H8v4h1v6H6l1 4zm3-6V8h6v4h-6z" fill="rgba(255,255,255,0.6)"/></svg></div>
+<h1>${message}</h1>
+<p>O aplicativo será reiniciado automaticamente</p>
+<div class="bar-bg"><div class="bar-fill"></div></div>
+<div class="pct">${Math.round(percent)}%</div>
+</body></html>`));
+        };
 
-        // Mostrar só quando o Lovable carregar (evita flash)
-        lovableView.webContents.once('did-finish-load', () => {
-            mainWindow.maximize();
-            mainWindow.show();
-        });
+        console.log('[SISTEMA] Janela principal criada.');
 
-        console.log(`[SISTEMA] Janela principal criada. Carregando: ${APP_URL}`);
-        console.log('[SISTEMA] Aplicação pronta. Arquitetura BrowserView ativa.');
-
-        // ★ AUTO-UPDATER DO ELECTRON: verifica se tem versão nova no GitHub Releases
-        // Baixa e instala automaticamente ao fechar o app
+        // ★ AUTO-UPDATER: Verificar oculto, só mostrar tela se tiver update
         if (autoUpdater) {
-            autoUpdater.on('checking-for-update', () => {
-                console.log('[APP-UPDATER] Verificando atualizações do app...');
-            });
+            let updateFound = false;
+            let lovableLoaded = false;
+            let fallback = null;
+
+            const safeLoadLovable = () => {
+                if (lovableLoaded || updateFound) return;
+                lovableLoaded = true;
+                clearTimeout(fallback);
+                loadLovable();
+            };
+
             autoUpdater.on('update-available', (info) => {
-                console.log(`[APP-UPDATER] ✅ Nova versão disponível: ${info.version}`);
+                updateFound = true;
+                clearTimeout(fallback);
+                console.log(`[APP-UPDATER] ✅ Nova versão: ${info.version}. Baixando...`);
+                showUpdateScreen('Atualizando MultiPrime...', 0);
+                autoUpdater.downloadUpdate();
             });
+
             autoUpdater.on('update-not-available', () => {
-                console.log('[APP-UPDATER] App está na versão mais recente.');
+                console.log('[APP-UPDATER] Versão mais recente.');
+                safeLoadLovable();
             });
+
             autoUpdater.on('download-progress', (progress) => {
-                console.log(`[APP-UPDATER] Baixando: ${Math.round(progress.percent)}%`);
+                const pct = Math.round(progress.percent);
+                console.log(`[APP-UPDATER] Baixando: ${pct}%`);
+                showUpdateScreen('Baixando atualização...', pct);
             });
+
             autoUpdater.on('update-downloaded', (info) => {
-                console.log(`[APP-UPDATER] ✅ Versão ${info.version} baixada. Será instalada ao fechar o app.`);
+                console.log(`[APP-UPDATER] ✅ Versão ${info.version} pronta. Reiniciando...`);
+                showUpdateScreen('Instalando... Reiniciando em instantes', 100);
+                setTimeout(() => {
+                    autoUpdater.quitAndInstall(false, true);
+                }, 2000);
             });
+
             autoUpdater.on('error', (err) => {
                 console.warn('[APP-UPDATER] Erro (não crítico):', err.message);
+                safeLoadLovable();
             });
 
-            // Verificar após 15s (não atrasar a inicialização)
-            setTimeout(() => {
-                autoUpdater.checkForUpdatesAndNotify().catch(() => {});
-            }, 15000);
+            // Fallback: se em 5s nenhum evento disparou (ex: modo dev)
+            fallback = setTimeout(safeLoadLovable, 5000);
+
+            autoUpdater.checkForUpdates().catch(() => safeLoadLovable());
+        } else {
+            loadLovable();
         }
+
+        console.log('[SISTEMA] Aplicação pronta.');
     });
 
     app.on('window-all-closed', () => {

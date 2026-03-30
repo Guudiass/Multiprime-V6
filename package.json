@@ -1,0 +1,79 @@
+{
+  "name": "multiprime-v6",
+  "version": "6.2.1",
+  "description": "MultiPrime - Designer Prime",
+  "author": "Designer Prime <contato@designerprime.com.br>",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "publish": "electron-builder --win --publish always"
+  },
+  "build": {
+    "appId": "com.designerprime.multiprime",
+    "productName": "MultiPrime V6",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "preload-secure.js",
+      "preload-toolbar.js",
+      "toolbar.html",
+      "afterSign.js",
+      "entitlements.mac.plist",
+      "icon.*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "icon.ico"
+    },
+    "mac": {
+  "target": [
+    { "target": "dmg", "arch": ["x64", "arm64"] },
+    { "target": "zip", "arch": ["x64", "arm64"] }
+  ],
+  "icon": "icon.png",
+  "category": "public.app-category.productivity"
+},
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "icon.png",
+      "category": "Utility"
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
+      "allowElevation": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Guudiass",
+      "repo": "Multiprime-V6",
+      "releaseType": "release"
+    },
+    "asar": true
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0",
+    "@electron/notarize": "^2.5.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

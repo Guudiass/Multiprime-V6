@@ -806,8 +806,47 @@ function setupDownloadManager(mainWindow, view, isolatedSession) {
     const tempDownloadDir = path.join(app.getPath('temp'), 'multiprime-downloads');
     if (!fs.existsSync(tempDownloadDir)) fs.mkdirSync(tempDownloadDir, { recursive: true });
 
+    // Fila de downloads para evitar múltiplos diálogos simultâneos
+    let dialogQueue = [];
+    let dialogBusy = false;
+
+    async function processDialogQueue() {
+        if (dialogBusy || dialogQueue.length === 0) return;
+        dialogBusy = true;
+
+        const { tempPath, filename, downloadId, mainWindow: mw } = dialogQueue.shift();
+        const parsedName = path.parse(filename);
+        const extNoDot = parsedName.ext ? parsedName.ext.replace('.', '') : '*';
+
+        try {
+            const { canceled, filePath } = await dialog.showSaveDialog(mw, {
+                title: 'Salvar download como...',
+                defaultPath: path.join(app.getPath('downloads'), filename),
+                filters: [
+                    { name: `Arquivo ${extNoDot.toUpperCase()}`, extensions: [extNoDot] },
+                    { name: 'Todos os arquivos', extensions: ['*'] }
+                ]
+            });
+
+            if (canceled || !filePath) {
+                try { fs.unlinkSync(tempPath); } catch {}
+            } else {
+                moveFileToFinal(tempPath, filePath, downloadId, mw);
+            }
+        } catch {
+            try { fs.unlinkSync(tempPath); } catch {}
+        }
+
+        dialogBusy = false;
+        processDialogQueue();
+    }
+
     isolatedSession.on('will-download', (event, item) => {
         if (mainWindow.isDestroyed()) return item.cancel();
+
+        const url = item.getURL();
+        const totalBytes = item.getTotalBytes();
+        const isBlob = url.startsWith('blob:');
 
         // Detectar nome e extensão do arquivo
         let filename = item.getFilename();
@@ -828,90 +867,88 @@ function setupDownloadManager(mainWindow, view, isolatedSession) {
             filename = `download-${Date.now()}${ext}`;
         }
 
-        // ★ PASSO 1: Definir caminho TEMPORÁRIO de forma SÍNCRONA
-        // Isso impede o Electron de salvar na pasta Downloads padrão
-        const tempPath = path.join(tempDownloadDir, `${crypto.randomUUID()}_${filename}`);
-        item.setSavePath(tempPath);
-
-        const parsedName = path.parse(filename);
-        const extNoDot = parsedName.ext ? parsedName.ext.replace('.', '') : '*';
-
-        // ★ PASSO 2: Abrir diálogo "Salvar como" (assíncrono)
-        let userChosenPath = null;
-        let dialogDone = false;
-        let downloadDone = false;
-        let downloadState = null;
+        console.log(`[DOWNLOAD] Iniciando: ${filename} | ${isBlob ? 'BLOB' : 'HTTP'} | Tamanho: ${totalBytes} bytes`);
 
         const downloadId = `dl-${crypto.randomUUID()}`;
 
-        dialog.showSaveDialog(mainWindow, {
-            title: 'Salvar download como...',
-            defaultPath: path.join(app.getPath('downloads'), filename),
-            filters: [
-                { name: `Arquivo ${extNoDot.toUpperCase()}`, extensions: [extNoDot] },
-                { name: 'Todos os arquivos', extensions: ['*'] }
-            ]
-        }).then(({ canceled, filePath }) => {
-            dialogDone = true;
+        if (isBlob) {
+            // ★ BLOB URL: Salvar direto em Downloads (instantâneo, evita expiração)
+            // Depois de salvo, oferecer "Salvar como" para mover se quiser
+            const downloadsPath = findUniquePath(path.join(app.getPath('downloads'), filename));
+            item.setSavePath(downloadsPath);
 
-            if (canceled || !filePath) {
-                // Usuário cancelou → cancelar download e limpar temp
-                item.cancel();
-                try { fs.unlinkSync(tempPath); } catch {}
-                return;
+            console.log(`[DOWNLOAD] Blob → salvando em: ${downloadsPath}`);
+
+            if (!mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('download-started', { id: downloadId, filename });
             }
 
-            userChosenPath = filePath;
-
-            // Notificar toolbar
-            mainWindow.webContents.send('download-started', { id: downloadId, filename: path.basename(filePath) });
-
-            // Se o download já terminou enquanto o diálogo estava aberto, mover agora
-            if (downloadDone && downloadState === 'completed') {
-                moveFileToFinal(tempPath, userChosenPath, downloadId, mainWindow);
-            }
-        }).catch(() => {
-            dialogDone = true;
-            item.cancel();
-            try { fs.unlinkSync(tempPath); } catch {}
-        });
-
-        // ★ PASSO 3: Progresso do download
-        let lastProgress = 0, lastUpdate = 0;
-        item.on('updated', (e, state) => {
-            if (mainWindow.isDestroyed() || state !== 'progressing' || item.getTotalBytes() <= 0) return;
-            if (!userChosenPath) return; // Não notificar enquanto diálogo está aberto
-            const progress = Math.round((item.getReceivedBytes() / item.getTotalBytes()) * 100);
-            const now = Date.now();
-            if (progress > lastProgress && now - lastUpdate > 250) {
+            item.on('updated', (e, state) => {
+                if (mainWindow.isDestroyed()) return;
+                const total = item.getTotalBytes();
+                if (total <= 0 || state !== 'progressing') return;
+                const progress = Math.round((item.getReceivedBytes() / total) * 100);
                 mainWindow.webContents.send('download-progress', { id: downloadId, progress });
-                lastProgress = progress;
-                lastUpdate = now;
-            }
-        });
+            });
 
-        // ★ PASSO 4: Download terminou → mover do temp para destino final
-        item.on('done', (e, state) => {
-            downloadDone = true;
-            downloadState = state;
+            item.on('done', (e, state) => {
+                console.log(`[DOWNLOAD] Blob concluído: ${filename} | Estado: ${state} | Recebido: ${item.getReceivedBytes()} bytes`);
 
-            if (state !== 'completed') {
-                // Download falhou ou foi cancelado → limpar temp
-                try { fs.unlinkSync(tempPath); } catch {}
-                if (userChosenPath && !mainWindow.isDestroyed()) {
+                if (state !== 'completed') {
+                    try { fs.unlinkSync(downloadsPath); } catch {}
+                }
+
+                if (!mainWindow.isDestroyed()) {
                     mainWindow.webContents.send('download-complete', {
-                        id: downloadId, state, path: null, progress: 0
+                        id: downloadId, state,
+                        path: state === 'completed' ? downloadsPath : null,
+                        progress: state === 'completed' ? 100 : 0
                     });
                 }
-                return;
+            });
+
+        } else {
+            // ★ HTTP URL: Salvar no temp primeiro, depois "Salvar como"
+            const tempPath = path.join(tempDownloadDir, `${crypto.randomUUID()}_${filename}`);
+            item.setSavePath(tempPath);
+
+            if (!mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('download-started', { id: downloadId, filename });
             }
 
-            // Se o usuário já escolheu o destino, mover agora
-            if (userChosenPath) {
-                moveFileToFinal(tempPath, userChosenPath, downloadId, mainWindow);
-            }
-            // Se o diálogo ainda está aberto, o .then() acima vai mover quando fechar
-        });
+            let lastProgress = 0, lastUpdate = 0;
+
+            item.on('updated', (e, state) => {
+                if (mainWindow.isDestroyed() || state !== 'progressing') return;
+                const total = item.getTotalBytes();
+                if (total <= 0) return;
+                const progress = Math.round((item.getReceivedBytes() / total) * 100);
+                const now = Date.now();
+                if (progress > lastProgress && now - lastUpdate > 250) {
+                    mainWindow.webContents.send('download-progress', { id: downloadId, progress });
+                    lastProgress = progress;
+                    lastUpdate = now;
+                }
+            });
+
+            item.on('done', (e, state) => {
+                console.log(`[DOWNLOAD] Concluído: ${filename} | Estado: ${state} | Recebido: ${item.getReceivedBytes()} bytes`);
+
+                if (state !== 'completed') {
+                    try { fs.unlinkSync(tempPath); } catch {}
+                    if (!mainWindow.isDestroyed()) {
+                        mainWindow.webContents.send('download-complete', {
+                            id: downloadId, state, path: null, progress: 0
+                        });
+                    }
+                    return;
+                }
+
+                // Download completou → enfileirar "Salvar como"
+                dialogQueue.push({ tempPath, filename, downloadId, mainWindow });
+                processDialogQueue();
+            });
+        }
     });
 }
 

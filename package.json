@@ -1,6 +1,6 @@
 {
   "name": "multiprime-v6",
-  "version": "6.2.4",
+  "version": "6.2.5",
   "description": "MultiPrime - Designer Prime",
   "author": "Designer Prime <contato@designerprime.com.br>",
   "main": "main.js",
@@ -38,15 +38,15 @@
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] },
-        { "target": "zip", "arch": ["x64", "arm64"] }
+        { "target": "dmg", "arch": ["x64", "arm64"] }
       ],
       "icon": "icon.png",
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "entitlements.mac.plist",
-      "entitlementsInherit": "entitlements.mac.plist"
+      "entitlementsInherit": "entitlements.mac.plist",
+      "notarize": false
     },
     "linux": {
       "target": [

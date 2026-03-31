@@ -51,6 +51,9 @@ const CRYPTO_CONFIG = {
     salt: 'multiprime-cookies-salt-2025'
 };
 
+// ★ CAPSOLVER: Resolver Cloudflare Turnstile automaticamente
+const CAPSOLVER_API_KEY = 'CAP-01A9A1326BAF756532B4BDF3127D364D207D976FD8558E2EC4C7CFD117597533';
+
 // ===================================================================
 // SEGURANÇA — IPC CRIPTOGRAFADO
 // ===================================================================
@@ -404,6 +407,84 @@ function prepareCookiesForInjection(cookies, defaultUrl) {
     return [...normal, ...auth];
 }
 
+// ===================================================================
+// CAPSOLVER — RESOLVER TURNSTILE
+// ===================================================================
+async function solveTurnstile(websiteURL, websiteKey) {
+    if (!CAPSOLVER_API_KEY || CAPSOLVER_API_KEY.includes('XXXX')) {
+        console.warn('[CAPSOLVER] API key não configurada');
+        return null;
+    }
+
+    
+
+    try {
+        // Criar task
+        const createResp = await capsolverRequest('createTask', {
+            clientKey: CAPSOLVER_API_KEY,
+            task: {
+                type: 'AntiTurnstileTaskProxyLess',
+                websiteURL: websiteURL,
+                websiteKey: websiteKey
+            }
+        });
+
+        if (!createResp || !createResp.taskId) {
+            console.error('[CAPSOLVER] Falha ao criar task');
+            return null;
+        }
+
+        // Polling para resultado (max 60s)
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+
+            const result = await capsolverRequest('getTaskResult', {
+                clientKey: CAPSOLVER_API_KEY,
+                taskId: createResp.taskId
+            });
+
+            if (result && result.status === 'ready') {
+                console.log('[CAPSOLVER] ✅ Token obtido');
+                return result.solution?.token;
+            }
+
+            if (result && (result.status === 'failed' || result.errorId)) {
+                console.error('[CAPSOLVER] ❌ Falha');
+                return null;
+            }
+        }
+
+        console.error('[CAPSOLVER] ❌ Timeout (60s)');
+        return null;
+    } catch (err) {
+        console.error('[CAPSOLVER] Erro:', err.message);
+        return null;
+    }
+}
+
+function capsolverRequest(endpoint, body) {
+    return new Promise((resolve, reject) => {
+        const data = JSON.stringify(body);
+        const req = https.request({
+            hostname: 'api.capsolver.com',
+            path: '/' + endpoint,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+        }, (res) => {
+            let chunks = '';
+            res.on('data', c => { chunks += c; });
+            res.on('end', () => {
+                try { resolve(JSON.parse(chunks)); }
+                catch { resolve(null); }
+            });
+        });
+        req.on('error', reject);
+        req.setTimeout(30000, () => { req.destroy(); reject(new Error('Timeout')); });
+        req.write(data);
+        req.end();
+    });
+}
+
 function findUniquePath(proposedPath) {
     if (!fs.existsSync(proposedPath)) return proposedPath;
     const { dir, name, ext } = path.parse(proposedPath);
@@ -425,7 +506,6 @@ async function limparParticoesAntigas() {
             .map(item => fsPromises.rm(path.join(partitionsPath, item), { recursive: true, force: true }));
         if (deletePromises.length > 0) {
             await Promise.allSettled(deletePromises);
-            console.log(`[LIMPEZA] ${deletePromises.length} partição(ões) removida(s).`);
         }
     } catch (err) { console.error('[LIMPEZA] Erro:', err); }
 }
@@ -500,12 +580,14 @@ function injectSiteFixes(webContents) {
                     z-index: 9998 !important;
                 }
             `).then(() => {
-                console.log(`[CSS FIX] Dialog fix aplicado para ${hostname}`);
+                
             }).catch(() => {});
         }
 
         // Adicionar mais sites aqui conforme necessário:
         // if (hostname.includes('outro-site.com')) { ... }
+
+        // Freepik/Turnstile: CapSolver integration handled via page-title-updated event
 
     } catch (e) {
         // URL inválida ou webContents destruído — ignorar
@@ -594,6 +676,57 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
         withAlive(mainWindow, (w) => w.webContents.send('url-updated', url));
     });
 
+    // ★ CAPSOLVER: Detectar Turnstile sitekey via título e resolver automaticamente
+    let turnstileSolving = false;
+    const turnstileSolved = new Map();
+    
+    view.webContents.on('page-title-updated', (e, title) => {
+        if (title.startsWith('MP_TURNSTILE:') && !turnstileSolving) {
+            e.preventDefault();
+            const sitekey = title.substring('MP_TURNSTILE:'.length);
+            if (!sitekey) return;
+
+            const pageUrl = view.webContents.getURL().split('#')[0];
+            
+            const lastSolved = turnstileSolved.get(pageUrl);
+            if (lastSolved && Date.now() - lastSolved < 30000) {
+                console.log('[CAPSOLVER] Já resolvido recentemente');
+                return;
+            }
+
+            turnstileSolving = true;
+            console.log('[CAPSOLVER] Resolvendo Turnstile...');
+
+            solveTurnstile(pageUrl, sitekey).then(token => {
+                turnstileSolving = false;
+                if (token && !view.webContents.isDestroyed()) {
+                    console.log('[CAPSOLVER] ✅ Injetando token...');
+                    
+                    turnstileSolved.set(pageUrl, Date.now());
+                    reloadTracker.clear();
+                    
+                    view.webContents.executeJavaScript(`
+                        if (window.__mpTurnstileCallback) {
+                            window.__mpTurnstileCallback('${token.replace(/'/g, "\\'")}');
+                            console.log('[CAPSOLVER] Callback chamado');
+                        } else {
+                            console.warn('[CAPSOLVER] Callback não encontrado!');
+                        }
+                    `).catch(() => {});
+                    
+                    setTimeout(() => {
+                        if (!view.webContents.isDestroyed()) {
+                            reloadTracker.clear();
+                            view.webContents.reload();
+                        }
+                    }, 2000);
+                } else {
+                    console.error('[CAPSOLVER] Token não obtido ou view destruída');
+                }
+            });
+        }
+    });
+
     // ★ BARRA DE CARREGAMENTO: enviar eventos de loading para a toolbar
     view.webContents.on('did-start-loading', () => {
         withAlive(mainWindow, (w) => w.webContents.send('page-loading', true));
@@ -622,27 +755,47 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
 
     // Falha de navegação
     view.webContents.on('did-fail-load', (event, errorCode, desc, url, isMainFrame) => {
-        // ERR_ABORTED (-3) é normal (navegação interrompida por outra), ignorar silenciosamente
         if (errorCode === -3) return;
-        
-        console.warn(`[NAV] Falha: ${desc} (${errorCode}) → ${url}`);
-        
-        // Parar loading bar
         if (isMainFrame) {
             withAlive(mainWindow, (w) => w.webContents.send('page-loading', false));
         }
     });
 
+    // Crash recovery — recarregar automaticamente
+    view.webContents.on('render-process-gone', () => {
+        setTimeout(() => {
+            if (!view.webContents.isDestroyed()) view.webContents.reload();
+        }, 1000);
+    });
+
+    // Anti-reload-loop — bloquear loops de reload (Turnstile/Cloudflare)
+    const reloadTracker = new Map();
+    view.webContents.on('will-navigate', (event, url) => {
+        if (view.webContents.isDestroyed()) return;
+        const cleanCurrent = view.webContents.getURL().split('#')[0];
+        const cleanNew = url.split('#')[0];
+        if (cleanCurrent === cleanNew) {
+            const now = Date.now();
+            const tracker = reloadTracker.get(cleanNew) || { count: 0, firstTime: now };
+            if (now - tracker.firstTime > 15000) { tracker.count = 0; tracker.firstTime = now; }
+            tracker.count++;
+            reloadTracker.set(cleanNew, tracker);
+            if (tracker.count > 2) { event.preventDefault(); return; }
+        } else {
+            reloadTracker.clear();
+        }
+    });
+
+    view.webContents.on('unresponsive', () => {});
+    view.webContents.on('responsive', () => {});
     // ★ POPUPS: Roteamento inteligente
     // - Mesmo domínio (ChatGPT, etc.) → navega na própria view (sem popup)
     // - about:blank / blob: / javascript: → negar (modais internos do site)
     // - Domínio externo → janela nova (para downloads, OAuth, etc.)
     view.webContents.setWindowOpenHandler(({ url, disposition }) => {
-        console.log(`[POPUP] ${disposition}: ${url}`);
 
         // about:blank, blob:, javascript: → negar (modais internos, o site cuida)
         if (!url || url === 'about:blank' || url.startsWith('blob:') || url.startsWith('javascript:')) {
-            console.log('[POPUP] Negado (modal interno)');
             return { action: 'deny' };
         }
 
@@ -654,7 +807,6 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
 
             // Mesmo domínio ou subdomínio → navegar na própria view
             if (currentHost === popupHost || popupHost.endsWith('.' + currentHost) || currentHost.endsWith('.' + popupHost)) {
-                console.log(`[POPUP] Mesmo domínio — navegando na view: ${url}`);
                 view.webContents.loadURL(url);
                 return { action: 'deny' };
             }
@@ -663,7 +815,6 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
         }
 
         // Domínio diferente → janela nova centralizada (Vecteezy download, OAuth, etc.)
-        console.log(`[POPUP] Domínio externo — abrindo janela: ${url}`);
         const { screen } = require('electron');
         const primaryDisplay = screen.getPrimaryDisplay();
         const { width: screenW, height: screenH } = primaryDisplay.workAreaSize;
@@ -695,7 +846,6 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
 
     // Quando um popup é criado, configurar auto-close pós-download e popups aninhados
     view.webContents.on('did-create-window', (popupWindow) => {
-        console.log('[POPUP] Janela popup criada');
 
         // Se o popup dispara um download (ex: Vecteezy), fechar depois
         let downloadTriggered = false;
@@ -703,7 +853,6 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
             downloadTriggered = true;
             setTimeout(() => {
                 if (!popupWindow.isDestroyed()) {
-                    console.log('[POPUP] Fechando popup pós-download');
                     popupWindow.close();
                 }
             }, 2000);
@@ -732,7 +881,6 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
                     popupWindow.webContents.executeJavaScript('document.body?.innerHTML?.length || 0')
                         .then(len => {
                             if (len < 10 && !popupWindow.isDestroyed()) {
-                                console.log('[POPUP] Popup vazio detectado, fechando');
                                 popupWindow.close();
                             }
                         })
@@ -867,7 +1015,6 @@ function setupDownloadManager(mainWindow, view, isolatedSession) {
             filename = `download-${Date.now()}${ext}`;
         }
 
-        console.log(`[DOWNLOAD] Iniciando: ${filename} | ${isBlob ? 'BLOB' : 'HTTP'} | Tamanho: ${totalBytes} bytes`);
 
         const downloadId = `dl-${crypto.randomUUID()}`;
 
@@ -877,7 +1024,6 @@ function setupDownloadManager(mainWindow, view, isolatedSession) {
             const downloadsPath = findUniquePath(path.join(app.getPath('downloads'), filename));
             item.setSavePath(downloadsPath);
 
-            console.log(`[DOWNLOAD] Blob → salvando em: ${downloadsPath}`);
 
             if (!mainWindow.isDestroyed()) {
                 mainWindow.webContents.send('download-started', { id: downloadId, filename });
@@ -892,7 +1038,6 @@ function setupDownloadManager(mainWindow, view, isolatedSession) {
             });
 
             item.on('done', (e, state) => {
-                console.log(`[DOWNLOAD] Blob concluído: ${filename} | Estado: ${state} | Recebido: ${item.getReceivedBytes()} bytes`);
 
                 if (state !== 'completed') {
                     try { fs.unlinkSync(downloadsPath); } catch {}
@@ -932,7 +1077,6 @@ function setupDownloadManager(mainWindow, view, isolatedSession) {
             });
 
             item.on('done', (e, state) => {
-                console.log(`[DOWNLOAD] Concluído: ${filename} | Estado: ${state} | Recebido: ${item.getReceivedBytes()} bytes`);
 
                 if (state !== 'completed') {
                     try { fs.unlinkSync(tempPath); } catch {}
@@ -967,7 +1111,6 @@ function moveFileToFinal(tempPath, destPath, downloadId, mainWindow) {
             try { fs.unlinkSync(tempPath); } catch {}
         }
 
-        console.log(`[DOWNLOAD] ✅ Salvo em: ${finalPath}`);
 
         if (!mainWindow.isDestroyed()) {
             mainWindow.webContents.send('download-complete', {
@@ -1157,18 +1300,15 @@ async function handleAbrirNavegador(event, rawPerfil) {
     // ★ Descriptografar perfil se veio criptografado
     let perfil;
     if (rawPerfil && rawPerfil.__encrypted && rawPerfil.payload) {
-        console.log('[IPC CRYPTO] Perfil recebido criptografado. Descriptografando...');
         perfil = decryptIPC(rawPerfil.payload);
         if (!perfil) {
             console.error('[IPC CRYPTO] ❌ Falha ao descriptografar perfil. IPC possivelmente adulterado.');
             dialog.showErrorBox('Erro de Segurança', 'Não foi possível processar os dados de forma segura.');
             return;
         }
-        console.log('[IPC CRYPTO] ✅ Perfil descriptografado com sucesso.');
     } else {
         // Perfil veio em texto puro (retrocompatibilidade)
         perfil = rawPerfil;
-        console.log('[IPC] Perfil recebido (sem criptografia).');
     }
 
     const windowId = `profile_${Date.now()}`;
@@ -1216,7 +1356,6 @@ async function handleAbrirNavegador(event, rawPerfil) {
             const prepared = prepareCookiesForInjection(cookiesToInject, perfil.link);
             const skipped = cookiesToInject.length - prepared.length;
 
-            console.log(`[SESSÃO ${windowId}] Cookies: ${cookiesToInject.length} total, ${prepared.length} válidos, ${skipped} removidos (expirados/duplicados)`);
 
             let ok = 0, fail = 0;
             const failedNames = [];
@@ -1230,7 +1369,6 @@ async function handleAbrirNavegador(event, rawPerfil) {
                 }
             }
 
-            console.log(`[SESSÃO ${windowId}] Injeção: ${ok} OK, ${fail} falhas`);
             if (failedNames.length > 0) {
                 console.warn(`[SESSÃO ${windowId}] Primeiras falhas:`, failedNames.join(' | '));
             }
@@ -1265,15 +1403,28 @@ async function handleAbrirNavegador(event, rawPerfil) {
                 const bypass = [perfil.proxy.bypass || '', '*.envatousercontent.com'].filter(Boolean).join(',');
                 await isolatedSession.setProxy({ proxyRules, proxyBypassRules: bypass });
 
-                console.log(`[PROXY] Tipo: ${t} | Host: ${perfil.proxy.host}:${validation.port} | Auth: ${perfil.proxy.username ? 'SIM' : 'NÃO'}`);
-            } else {
+                } else {
                 console.warn(`[PROXY] Configuração inválida: ${validation.error}. Usando direto.`);
                 await isolatedSession.setProxy({ proxyRules: 'direct://' });
             }
         } else {
-            console.log('[PROXY] Nenhum proxy configurado. Conexão direta.');
             await isolatedSession.setProxy({ proxyRules: 'direct://' });
         }
+
+        // ★ PERMISSÕES: Permitir tudo que sites precisam
+        isolatedSession.setPermissionRequestHandler((webContents, permission, callback) => {
+            callback(true);
+        });
+        isolatedSession.setPermissionCheckHandler(() => true);
+
+        // ★ TURNSTILE: Bloquear script real, usar mock + CapSolver
+        isolatedSession.webRequest.onBeforeRequest(
+            { urls: ['*://challenges.cloudflare.com/turnstile/v0/api.js*'] },
+            (details, callback) => {
+                console.log('[TURNSTILE] Script bloqueado → CapSolver');
+                callback({ cancel: true });
+            }
+        );
 
         // CRIAR JANELA COM BROWSERVIEW
         const { mainWindow: mw, view } = createSecureWindow(perfil, isolatedSession, storageData);
@@ -1285,7 +1436,6 @@ async function handleAbrirNavegador(event, rawPerfil) {
                 username: perfil.proxy.username,
                 password: perfil.proxy.password ?? ''
             });
-            console.log(`[PROXY] Credenciais armazenadas para wcId ${view.webContents.id}: user=${perfil.proxy.username}`);
         }
 
         // Carregar URL no BrowserView
@@ -1346,7 +1496,6 @@ const nossoManipuladorDeLogin = (event, webContents, request, authInfo, callback
     }
 
     if (credentials) {
-        console.log(`[PROXY AUTH] ✅ Autenticando ${scheme} ${host} (tentativa ${attempts}/3, wcId: ${wcId})`);
         callback(credentials.username, credentials.password);
     } else {
         console.error(`[PROXY AUTH] ❌ NENHUMA credencial disponível para ${host} (wcId: ${wcId})`);
@@ -1361,6 +1510,9 @@ const nossoManipuladorDeLogin = (event, webContents, request, authInfo, callback
 function startApp() {
     // Anti-bot
     app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+    // Estabilidade GPU — previne tela preta em BrowserViews
+    app.commandLine.appendSwitch('disable-gpu-sandbox');
+    app.commandLine.appendSwitch('disable-software-rasterizer');
 
     app.whenReady().then(async () => {
         await limparParticoesAntigas();
@@ -1488,7 +1640,6 @@ body {
                 try {
                     const host = new URL(url).hostname;
                     if (host !== lovableHost) {
-                        console.log(`[EXTERNO] Abrindo no navegador: ${url}`);
                         shell.openExternal(url);
                         return { action: 'deny' };
                     }
@@ -1501,7 +1652,6 @@ body {
                     const host = new URL(url).hostname;
                     if (host !== lovableHost) {
                         e.preventDefault();
-                        console.log(`[EXTERNO] Redirecionando para navegador: ${url}`);
                         shell.openExternal(url);
                     }
                 } catch {}
@@ -1544,7 +1694,6 @@ p { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 20px; }
 </body></html>`));
         };
 
-        console.log('[SISTEMA] Janela principal criada.');
 
         // ★ AUTO-UPDATER: Verificar oculto, só mostrar tela se tiver update
         if (autoUpdater) {
@@ -1616,7 +1765,6 @@ p { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 20px; }
             loadLovable();
         }
 
-        console.log('[SISTEMA] Aplicação pronta.');
     });
 
     app.on('window-all-closed', () => {

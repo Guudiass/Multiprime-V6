@@ -7,27 +7,41 @@ jobs:
   check:
     runs-on: macos-latest
     steps:
-      - name: Check status
+      - name: Check status and logs
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          echo "=== Verificando DMG x64 ==="
+          echo "=== Status DMG x64 ==="
           xcrun notarytool info d07ca1dc-a683-4bbd-ad79-79ac23b65726 \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" 2>&1 || true
 
           echo ""
-          echo "=== Verificando DMG arm64 ==="
+          echo "=== Log DMG x64 ==="
+          xcrun notarytool log d07ca1dc-a683-4bbd-ad79-79ac23b65726 \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" 2>&1 || true
+
+          echo ""
+          echo "=== Status DMG arm64 ==="
           xcrun notarytool info 436c4e57-6a41-4682-8f4f-5118c17addea \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" 2>&1 || true
 
           echo ""
-          echo "=== Histórico de submissões ==="
+          echo "=== Log DMG arm64 ==="
+          xcrun notarytool log 436c4e57-6a41-4682-8f4f-5118c17addea \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" 2>&1 || true
+
+          echo ""
+          echo "=== Histórico ==="
           xcrun notarytool history \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \

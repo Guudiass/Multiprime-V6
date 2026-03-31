@@ -13,8 +13,8 @@ const crypto = require('crypto');
 let autoUpdater;
 try {
     autoUpdater = require('electron-updater').autoUpdater;
-    autoUpdater.autoDownload = false;  // Controlar manualmente
-    autoUpdater.autoInstallOnAppQuit = false;
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = true;
 } catch (e) {
     console.warn('[APP-UPDATER] electron-updater não disponível (modo dev):', e.message);
     autoUpdater = null;
@@ -1582,8 +1582,25 @@ p { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 20px; }
                 console.log(`[APP-UPDATER] ✅ Versão ${info.version} pronta. Reiniciando...`);
                 showUpdateScreen('Instalando... Reiniciando em instantes', 100);
                 setTimeout(() => {
-                    autoUpdater.quitAndInstall(false, true);
+                    try {
+                        // Fechar todas as janelas para não bloquear o quit
+                        const allWindows = BrowserWindow.getAllWindows();
+                        allWindows.forEach(w => {
+                            try { w.removeAllListeners('close'); w.destroy(); } catch {}
+                        });
+                        // Instalar e reiniciar
+                        autoUpdater.quitAndInstall(true, true);
+                    } catch (err) {
+                        console.error('[APP-UPDATER] Erro ao instalar:', err);
+                        // Fallback: forçar quit
+                        app.quit();
+                    }
                 }, 2000);
+                // Fallback final: se nada funcionou em 10s, forçar saída
+                setTimeout(() => {
+                    console.warn('[APP-UPDATER] Fallback: forçando saída');
+                    app.exit(0);
+                }, 10000);
             });
 
             autoUpdater.on('error', (err) => {

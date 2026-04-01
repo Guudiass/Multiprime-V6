@@ -47,14 +47,16 @@ function _mp_encryptPerfil(data) {
 
 // ===== ABRIR NAVEGADOR (chamado pelo Lovable) =====
 window.abrirNavegador = function(perfil) {
-  var encrypted = _mp_encryptPerfil(perfil);
+  // Deep clone para garantir que Proxy objects do React/Lovable sejam convertidos em objetos puros
+  var cleanPerfil = JSON.parse(JSON.stringify(perfil));
+  var encrypted = _mp_encryptPerfil(cleanPerfil);
   if (encrypted) {
     _mp_ipc.send('abrir-navegador-secure', {
       __encrypted: true,
       payload: encrypted
     });
   } else {
-    _mp_ipc.send('abrir-navegador', perfil);
+    _mp_ipc.send('abrir-navegador', cleanPerfil);
   }
 };
 
@@ -132,4 +134,26 @@ window.getIntegrity = function(nonce) {
   }
 };
 
-console.log('[MULTIPRIME] window.abrirNavegador + window.getIntegrity configurados (boot-locked).');
+// ===== STATUS PANEL (main → Lovable) =====
+window.mpStatus = {
+  onTabOpened: null,
+  onTabClosed: null,
+  onTabStatus: null,
+  onEventLog: null,
+  onNavigation: null
+};
+
+_mp_ipc.on('mp-tab-opened', function(e, data) { if (window.mpStatus.onTabOpened) window.mpStatus.onTabOpened(data); });
+_mp_ipc.on('mp-tab-closed', function(e, data) { if (window.mpStatus.onTabClosed) window.mpStatus.onTabClosed(data); });
+_mp_ipc.on('mp-tab-status', function(e, data) { if (window.mpStatus.onTabStatus) window.mpStatus.onTabStatus(data); });
+_mp_ipc.on('mp-event-log', function(e, data) { if (window.mpStatus.onEventLog) window.mpStatus.onEventLog(data); });
+_mp_ipc.on('mp-navigation', function(e, data) { if (window.mpStatus.onNavigation) window.mpStatus.onNavigation(data); });
+
+// ===== TEMA (chamado pelo Lovable) =====
+window.setTema = function(tema) {
+  if (tema === 'dark' || tema === 'light') {
+    _mp_ipc.send('set-tema', tema);
+  }
+};
+
+console.log('[MULTIPRIME] window.abrirNavegador + window.getIntegrity + window.setTema configurados (boot-locked).');

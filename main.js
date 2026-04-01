@@ -23,7 +23,9 @@ try {
 // ===================================================================
 // CONSTANTES E CONFIGURAÇÃO
 // ===================================================================
+const TAB_BAR_HEIGHT = 36;
 const TOOLBAR_HEIGHT = 44;
+const TOTAL_HEADER_HEIGHT = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT; // 80
 
 // ★ URL DO SEU SITE LOVABLE (alterar para a URL real)
 const APP_URL = 'https://multiprime.designerprime.com.br';
@@ -246,9 +248,78 @@ async function uploadToGitHub(filePath, content, token, commitMessage = 'Atualiz
 // HELPERS
 // ===================================================================
 const proxyCredentials = new Map();
-const windowProfiles = new Map();
-// Mapa: mainWindow.id -> { mainWindow, browserView }
-const windowViews = new Map();
+// Mapa: viewId -> { fallbacks: [...], currentIndex: -1, session, perfil }
+const proxyFallbackState = new Map();
+
+// ===== LOVABLE VIEW (referencia global) =====
+let lovableView = null;
+
+function sendToLovable(channel, data) {
+    if (lovableView && !lovableView.webContents.isDestroyed()) {
+        lovableView.webContents.send(channel, data);
+    }
+}
+
+function logEvent(type, data) {
+    const event = { type, timestamp: Date.now(), ...data };
+    sendToLovable('mp-event-log', event);
+    console.log(`[EVENT] ${type}`, JSON.stringify(data || {}));
+}
+
+// ===== SISTEMA DE ABAS =====
+let browserWindow = null;           // janela unica (criada na 1a aba)
+const tabs = new Map();             // tabId -> { view, session, perfil, downloadsPanelOpen, title, url, isLoading }
+const perfilIdToTab = new Map();    // perfil.id -> tabId (deduplicacao)
+let activeTabId = null;
+
+function buildProxyRules(proxy) {
+    const validation = validateProxyConfig(proxy);
+    if (!validation.valid) return null;
+    const t = validation.type;
+    if (t === 'socks5' || t === 'socks') return `socks5://${proxy.host}:${validation.port}`;
+    if (t === 'socks4') return `socks4://${proxy.host}:${validation.port}`;
+    return `http://${proxy.host}:${validation.port}`;
+}
+
+async function switchToNextProxy(viewId) {
+    const state = proxyFallbackState.get(viewId);
+    if (!state) return false;
+
+    state.currentIndex++;
+    if (state.currentIndex >= state.fallbacks.length) {
+        console.error(`[PROXY FALLBACK] ❌ Todos os proxies falharam para view ${viewId}`);
+        logEvent('proxy_all_failed', { perfilId: state.perfil?.id, viewId });
+        return false;
+    }
+
+    const nextProxy = state.fallbacks[state.currentIndex];
+    const proxyRules = buildProxyRules(nextProxy);
+    if (!proxyRules) {
+        console.warn(`[PROXY FALLBACK] Proxy inválido no index ${state.currentIndex}, tentando próximo...`);
+        return switchToNextProxy(viewId); // tenta o proximo
+    }
+
+    const bypass = [nextProxy.bypass || '', '*.envatousercontent.com'].filter(Boolean).join(',');
+    await state.session.setProxy({ proxyRules, proxyBypassRules: bypass });
+
+    // Atualizar credenciais
+    proxyCredentials.delete(viewId);
+    if (nextProxy.username) {
+        proxyCredentials.set(viewId, {
+            username: nextProxy.username,
+            password: nextProxy.password ?? ''
+        });
+    }
+
+    // Reset tentativas de auth para o novo proxy
+    for (const [key] of proxyAuthAttempts) {
+        if (key.startsWith(`${viewId}-`)) proxyAuthAttempts.delete(key);
+    }
+
+    console.log(`[PROXY FALLBACK] ✅ View ${viewId} → fallback[${state.currentIndex}]: ${nextProxy.host}:${nextProxy.port} (${nextProxy.tipo || 'http'})`);
+    logEvent('proxy_fallback_success', { perfilId: state.perfil?.id, viewId, proxy: `${nextProxy.host}:${nextProxy.port}`, index: state.currentIndex });
+    return true;
+}
 
 function withAlive(win, fn) {
     try { if (win && !win.isDestroyed()) fn(win); } catch {}
@@ -519,19 +590,20 @@ const DOWNLOADS_PANEL_WIDTH = 370;
 /**
  * Calcula os bounds do BrowserView baseado no tamanho da janela e estado do painel.
  */
-function getViewBounds(mainWindow, panelOpen) {
-    const [width, height] = mainWindow.getSize();
+function getViewBounds(win, panelOpen) {
+    const { width, height } = win.getContentBounds();
     const viewWidth = panelOpen ? Math.max(400, width - DOWNLOADS_PANEL_WIDTH) : width;
-    return { x: 0, y: TOOLBAR_HEIGHT, width: viewWidth, height: height - TOOLBAR_HEIGHT };
+    return { x: 0, y: TOTAL_HEADER_HEIGHT, width: viewWidth, height: height - TOTAL_HEADER_HEIGHT };
 }
 
 /**
  * Atualiza os bounds da view levando em conta o estado do painel de downloads.
  */
-function updateViewBounds(mainWindow) {
-    const entry = windowViews.get(mainWindow.id);
-    if (!entry) return;
-    entry.view.setBounds(getViewBounds(mainWindow, entry.downloadsPanelOpen));
+function updateViewBounds() {
+    if (!browserWindow || browserWindow.isDestroyed() || !activeTabId) return;
+    const tab = tabs.get(activeTabId);
+    if (!tab) return;
+    tab.view.setBounds(getViewBounds(browserWindow, tab.downloadsPanelOpen));
 }
 
 /**
@@ -594,17 +666,19 @@ function injectSiteFixes(webContents) {
     }
 }
 
+// ===================================================================
+// JANELA UNICA + SISTEMA DE ABAS
+// ===================================================================
+
 /**
- * Cria a janela principal com toolbar embutida + BrowserView para o conteúdo web.
- * A toolbar é um HTML local carregado na própria janela.
- * O conteúdo web fica num BrowserView separado, SEM NENHUMA interferência CSS.
+ * Cria a janela principal com toolbar (chamada apenas 1 vez, na 1a aba).
  */
-function createSecureWindow(perfil, isolatedSession, storageData) {
-    const mainWindow = new BrowserWindow({
+function createBrowserWindow() {
+    const win = new BrowserWindow({
         ...CONFIG.WINDOW_DEFAULTS,
         frame: false,
         show: false,
-        backgroundColor: '#181818',
+        backgroundColor: currentTema === 'dark' ? '#181818' : '#f5f5f5',
         webPreferences: {
             preload: path.join(__dirname, 'preload-toolbar.js'),
             contextIsolation: true,
@@ -613,10 +687,94 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
         }
     });
 
-    // Carregar a toolbar HTML local na janela principal
-    mainWindow.loadFile(path.join(__dirname, 'toolbar.html'));
+    win.loadFile(path.join(__dirname, 'toolbar.html'));
 
-    // Criar o BrowserView para o conteúdo web
+    // Enviar tema atual quando a toolbar carregar
+    win.webContents.once('did-finish-load', () => {
+        win.webContents.send('theme-changed', currentTema);
+    });
+
+    // Recalcular bounds ao redimensionar
+    const onResize = () => {
+        if (!win.isDestroyed()) {
+            updateViewBounds();
+            // Forcar recalculo de viewport na aba ativa
+            const tab = activeTabId ? tabs.get(activeTabId) : null;
+            if (tab && !tab.view.webContents.isDestroyed()) {
+                setTimeout(() => {
+                    tab.view.webContents.executeJavaScript('window.dispatchEvent(new Event("resize"))').catch(() => {});
+                }, 100);
+            }
+        }
+    };
+    win.on('resize', onResize);
+    win.on('maximize', () => setTimeout(onResize, 50));
+    win.on('unmaximize', () => setTimeout(onResize, 50));
+
+    // Atalhos de teclado na toolbar
+    win.webContents.on('before-input-event', (event, input) => {
+        handleTabShortcut(event, input);
+    });
+
+    // Limpeza ao fechar — limpar TODAS as abas
+    win.on('closed', () => {
+        for (const [tabId, tab] of tabs) {
+            const viewId = tab.view.webContents.id;
+            proxyCredentials.delete(viewId);
+            proxyFallbackState.delete(viewId);
+            for (const [key] of proxyAuthAttempts) {
+                if (key.startsWith(`${viewId}-`)) proxyAuthAttempts.delete(key);
+            }
+        }
+        tabs.clear();
+        perfilIdToTab.clear();
+        activeTabId = null;
+        browserWindow = null;
+    });
+
+    win.once('ready-to-show', () => win.show());
+
+    browserWindow = win;
+    return win;
+}
+
+/**
+ * Atalhos de teclado para abas.
+ */
+function handleTabShortcut(event, input) {
+    if (input.type !== 'keyDown') return;
+    const ctrl = input.control || input.meta;
+    if (!ctrl) return;
+
+    const tabIds = Array.from(tabs.keys());
+    if (tabIds.length === 0) return;
+
+    if (input.key === 'w' || input.key === 'W') {
+        event.preventDefault();
+        if (activeTabId) closeTab(activeTabId);
+    } else if (input.key === 'Tab') {
+        event.preventDefault();
+        const idx = tabIds.indexOf(activeTabId);
+        const next = input.shift
+            ? (idx - 1 + tabIds.length) % tabIds.length
+            : (idx + 1) % tabIds.length;
+        activateTab(tabIds[next]);
+    } else if (input.key >= '1' && input.key <= '9') {
+        event.preventDefault();
+        const n = parseInt(input.key);
+        const target = n === 9 ? tabIds.length - 1 : n - 1;
+        if (target < tabIds.length) activateTab(tabIds[target]);
+    } else if (input.key === 't' || input.key === 'T' || input.key === 'n' || input.key === 'N') {
+        event.preventDefault(); // Bloquear Ctrl+T e Ctrl+N
+    }
+}
+
+/**
+ * Cria uma nova aba com BrowserView isolada.
+ */
+function createTab(perfil, isolatedSession, storageData) {
+    const tabId = `tab_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
     const view = new BrowserView({
         webPreferences: {
             session: isolatedSession,
@@ -628,92 +786,83 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
         }
     });
 
-    mainWindow.setBrowserView(view);
-    view.setBounds(getViewBounds(mainWindow, false));
-    view.setAutoResize({ width: true, height: true, horizontal: false, vertical: false });
+    const tabEntry = {
+        tabId,
+        view,
+        session: isolatedSession,
+        perfil,
+        downloadsPanelOpen: false,
+        title: perfil.link ? new URL(perfil.link).hostname : 'Nova aba',
+        url: perfil.link || '',
+        isLoading: true
+    };
 
-    // Recalcular bounds ao redimensionar + forçar recálculo de viewport
+    tabs.set(tabId, tabEntry);
+    if (perfil.id) perfilIdToTab.set(perfil.id, tabId);
+
+    const viewId = view.webContents.id;
+
+    // Forcar recalculo de viewport
     const forceViewportRecalc = () => {
         if (!view.webContents.isDestroyed()) {
             view.webContents.executeJavaScript('window.dispatchEvent(new Event("resize"))').catch(() => {});
         }
     };
 
-    mainWindow.on('resize', () => {
-        if (!mainWindow.isDestroyed()) {
-            updateViewBounds(mainWindow);
-            setTimeout(forceViewportRecalc, 100);
+    // URL e titulo — atualizar tab + URL bar se for a aba ativa
+    const sendToToolbar = (channel, data) => {
+        if (browserWindow && !browserWindow.isDestroyed()) {
+            browserWindow.webContents.send(channel, data);
         }
-    });
+    };
 
-    mainWindow.on('maximize', () => {
-        setTimeout(() => {
-            if (!mainWindow.isDestroyed()) {
-                updateViewBounds(mainWindow);
-                setTimeout(forceViewportRecalc, 100);
-            }
-        }, 50);
-    });
-    mainWindow.on('unmaximize', () => {
-        setTimeout(() => {
-            if (!mainWindow.isDestroyed()) {
-                updateViewBounds(mainWindow);
-                setTimeout(forceViewportRecalc, 100);
-            }
-        }, 50);
-    });
+    const updateTabInfo = (url, title) => {
+        if (url) tabEntry.url = url;
+        if (title) tabEntry.title = title;
+        // Atualizar tab-bar
+        sendToToolbar('tab-updated', { tabId, title: tabEntry.title, favicon: tabEntry.favicon, url: tabEntry.url });
+        // Se e a aba ativa, atualizar URL bar
+        if (activeTabId === tabId) {
+            sendToToolbar('url-updated', tabEntry.url);
+        }
+    };
 
-    // Salvar referências
-    const viewId = view.webContents.id;
-    windowViews.set(mainWindow.id, { mainWindow, view, downloadsPanelOpen: false });
-    windowProfiles.set(viewId, perfil);
-
-    // Enviar URL para a toolbar quando a view navegar
     view.webContents.on('did-navigate', (e, url) => {
-        withAlive(mainWindow, (w) => w.webContents.send('url-updated', url));
+        updateTabInfo(url, null);
+        sendToLovable('mp-navigation', { tabId, perfilId: perfil.id, url, title: tabEntry.title, timestamp: Date.now() });
     });
-    view.webContents.on('did-navigate-in-page', (e, url) => {
-        withAlive(mainWindow, (w) => w.webContents.send('url-updated', url));
-    });
+    view.webContents.on('did-navigate-in-page', (e, url) => updateTabInfo(url, null));
 
-    // ★ CAPSOLVER: Detectar Turnstile sitekey via título e resolver automaticamente
+    // Titulo da pagina → titulo da aba
     let turnstileSolving = false;
     const turnstileSolved = new Map();
-    
+
     view.webContents.on('page-title-updated', (e, title) => {
+        // CapSolver Turnstile
         if (title.startsWith('MP_TURNSTILE:') && !turnstileSolving) {
             e.preventDefault();
             const sitekey = title.substring('MP_TURNSTILE:'.length);
             if (!sitekey) return;
 
             const pageUrl = view.webContents.getURL().split('#')[0];
-            
             const lastSolved = turnstileSolved.get(pageUrl);
-            if (lastSolved && Date.now() - lastSolved < 30000) {
-                console.log('[CAPSOLVER] Já resolvido recentemente');
-                return;
-            }
+            if (lastSolved && Date.now() - lastSolved < 30000) return;
 
             turnstileSolving = true;
-            console.log('[CAPSOLVER] Resolvendo Turnstile...');
+            const solveStart = Date.now();
+            logEvent('turnstile_solving', { tabId, perfilId: perfil.id, url: pageUrl, sitekey });
 
             solveTurnstile(pageUrl, sitekey).then(token => {
                 turnstileSolving = false;
                 if (token && !view.webContents.isDestroyed()) {
-                    console.log('[CAPSOLVER] ✅ Injetando token...');
-                    
+                    logEvent('turnstile_solved', { tabId, perfilId: perfil.id, url: pageUrl, tempoMs: Date.now() - solveStart });
                     turnstileSolved.set(pageUrl, Date.now());
                     reloadTracker.clear();
-                    
                     view.webContents.executeJavaScript(`
                         if (window.__mpTurnstileCallback) {
                             window.__mpTurnstileCallback('${token.replace(/'/g, "\\'")}');
-                            console.log('[CAPSOLVER] Callback chamado');
-                        } else {
-                            console.warn('[CAPSOLVER] Callback não encontrado!');
                         }
                     `).catch(() => {});
-                    
                     setTimeout(() => {
                         if (!view.webContents.isDestroyed()) {
                             reloadTracker.clear();
@@ -721,54 +870,56 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
                         }
                     }, 2000);
                 } else {
-                    console.error('[CAPSOLVER] Token não obtido ou view destruída');
+                    logEvent('turnstile_failed', { tabId, perfilId: perfil.id, url: pageUrl, tempoMs: Date.now() - solveStart });
                 }
             });
+            return;
         }
+
+        // Titulo normal → atualizar aba
+        updateTabInfo(null, title);
     });
 
-    // ★ BARRA DE CARREGAMENTO: enviar eventos de loading para a toolbar
+    // Loading
     view.webContents.on('did-start-loading', () => {
-        withAlive(mainWindow, (w) => w.webContents.send('page-loading', true));
+        tabEntry.isLoading = true;
+        if (activeTabId === tabId) sendToToolbar('page-loading', true);
+        sendToLovable('mp-tab-status', { tabId, perfilId: perfil.id, url: tabEntry.url, title: tabEntry.title, isLoading: true });
     });
     view.webContents.on('did-stop-loading', () => {
-        withAlive(mainWindow, (w) => w.webContents.send('page-loading', false));
+        tabEntry.isLoading = false;
+        if (activeTabId === tabId) sendToToolbar('page-loading', false);
+        sendToLovable('mp-tab-status', { tabId, perfilId: perfil.id, url: tabEntry.url, title: tabEntry.title, isLoading: false });
+    });
+    view.webContents.on('did-start-navigation', (e, url, isInPlace, isMainFrame) => {
+        if (isMainFrame && activeTabId === tabId) sendToToolbar('page-loading', true);
     });
 
-    // ★ FIX VIEWPORT: Forçar recálculo de layout após carregar
+    // Viewport recalc + site fixes
     view.webContents.on('did-finish-load', () => {
         setTimeout(forceViewportRecalc, 300);
         setTimeout(forceViewportRecalc, 1000);
-        // Injetar CSS fixes específicos por site
         injectSiteFixes(view.webContents);
     });
-
-    // Também injetar após navegação (SPA routing)
     view.webContents.on('did-navigate', () => {
         setTimeout(() => injectSiteFixes(view.webContents), 500);
     });
-    view.webContents.on('did-start-navigation', (e, url, isInPlace, isMainFrame) => {
-        if (isMainFrame) {
-            withAlive(mainWindow, (w) => w.webContents.send('page-loading', true));
-        }
-    });
 
-    // Falha de navegação
+    // Falha de navegacao
     view.webContents.on('did-fail-load', (event, errorCode, desc, url, isMainFrame) => {
         if (errorCode === -3) return;
-        if (isMainFrame) {
-            withAlive(mainWindow, (w) => w.webContents.send('page-loading', false));
-        }
+        if (isMainFrame && activeTabId === tabId) sendToToolbar('page-loading', false);
     });
 
-    // Crash recovery — recarregar automaticamente
+    // Crash recovery
     view.webContents.on('render-process-gone', () => {
+        logEvent('tab_crashed', { tabId, perfilId: perfil.id, url: tabEntry.url });
         setTimeout(() => {
             if (!view.webContents.isDestroyed()) view.webContents.reload();
         }, 1000);
     });
 
-    // Anti-reload-loop — bloquear loops de reload (Turnstile/Cloudflare)
+    // Anti-reload-loop
     const reloadTracker = new Map();
     view.webContents.on('will-navigate', (event, url) => {
         if (view.webContents.isDestroyed()) return;
@@ -788,109 +939,61 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
 
     view.webContents.on('unresponsive', () => {});
     view.webContents.on('responsive', () => {});
-    // ★ POPUPS: Roteamento inteligente
-    // - Mesmo domínio (ChatGPT, etc.) → navega na própria view (sem popup)
-    // - about:blank / blob: / javascript: → negar (modais internos do site)
-    // - Domínio externo → janela nova (para downloads, OAuth, etc.)
-    view.webContents.setWindowOpenHandler(({ url, disposition }) => {
 
-        // about:blank, blob:, javascript: → negar (modais internos, o site cuida)
+    // Popups
+    view.webContents.setWindowOpenHandler(({ url }) => {
         if (!url || url === 'about:blank' || url.startsWith('blob:') || url.startsWith('javascript:')) {
             return { action: 'deny' };
         }
-
-        // Verificar se é mesmo domínio
         try {
-            const currentUrl = view.webContents.getURL();
-            const currentHost = new URL(currentUrl).hostname;
+            const currentHost = new URL(view.webContents.getURL()).hostname;
             const popupHost = new URL(url).hostname;
-
-            // Mesmo domínio ou subdomínio → navegar na própria view
             if (currentHost === popupHost || popupHost.endsWith('.' + currentHost) || currentHost.endsWith('.' + popupHost)) {
                 view.webContents.loadURL(url);
                 return { action: 'deny' };
             }
-        } catch (e) {
-            // URL inválida, deixar abrir como popup
-        }
+        } catch {}
 
-        // Domínio diferente → janela nova centralizada (Vecteezy download, OAuth, etc.)
         const { screen } = require('electron');
-        const primaryDisplay = screen.getPrimaryDisplay();
-        const { width: screenW, height: screenH } = primaryDisplay.workAreaSize;
+        const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
         const popW = Math.min(1200, Math.round(screenW * 0.8));
         const popH = Math.min(850, Math.round(screenH * 0.85));
-
         return {
             action: 'allow',
             overrideBrowserWindowOptions: {
-                x: Math.round((screenW - popW) / 2),
-                y: Math.round((screenH - popH) / 2),
-                width: popW,
-                height: popH,
-                minWidth: 500,
-                minHeight: 400,
-                modal: false,
-                show: true,
-                autoHideMenuBar: true,
-                frame: true,
-                webPreferences: {
-                    session: isolatedSession,
-                    contextIsolation: true,
-                    nodeIntegration: false,
-                    devTools: IS_DEV
-                }
+                x: Math.round((screenW - popW) / 2), y: Math.round((screenH - popH) / 2),
+                width: popW, height: popH, minWidth: 500, minHeight: 400,
+                modal: false, show: true, autoHideMenuBar: true, frame: true,
+                webPreferences: { session: isolatedSession, contextIsolation: true, nodeIntegration: false, devTools: IS_DEV }
             }
         };
     });
 
-    // Quando um popup é criado, configurar auto-close pós-download e popups aninhados
     view.webContents.on('did-create-window', (popupWindow) => {
-
-        // Se o popup dispara um download (ex: Vecteezy), fechar depois
-        let downloadTriggered = false;
         const onWillDownload = () => {
-            downloadTriggered = true;
-            setTimeout(() => {
-                if (!popupWindow.isDestroyed()) {
-                    popupWindow.close();
-                }
-            }, 2000);
+            setTimeout(() => { if (!popupWindow.isDestroyed()) popupWindow.close(); }, 2000);
         };
         isolatedSession.on('will-download', onWillDownload);
-
-        // Limpar listener quando popup fecha
-        popupWindow.on('closed', () => {
-            isolatedSession.removeListener('will-download', onWillDownload);
-        });
-
-        // Popups dentro de popups → abrir na mesma popup
+        popupWindow.on('closed', () => isolatedSession.removeListener('will-download', onWillDownload));
         popupWindow.webContents.setWindowOpenHandler(({ url: popupUrl }) => {
             if (popupUrl && popupUrl !== 'about:blank' && !popupUrl.startsWith('javascript:')) {
                 popupWindow.webContents.loadURL(popupUrl);
             }
             return { action: 'deny' };
         });
-
-        // Se o popup é about:blank e fica vazio por muito tempo, fechar
         setTimeout(() => {
             if (!popupWindow.isDestroyed()) {
-                const currentUrl = popupWindow.webContents.getURL();
-                if (currentUrl === 'about:blank' || currentUrl === '') {
-                    // Verificar se tem conteúdo real
+                const u = popupWindow.webContents.getURL();
+                if (u === 'about:blank' || u === '') {
                     popupWindow.webContents.executeJavaScript('document.body?.innerHTML?.length || 0')
-                        .then(len => {
-                            if (len < 10 && !popupWindow.isDestroyed()) {
-                                popupWindow.close();
-                            }
-                        })
+                        .then(len => { if (len < 10 && !popupWindow.isDestroyed()) popupWindow.close(); })
                         .catch(() => {});
                 }
             }
         }, 5000);
     });
 
-    // Auto-login: enviar credenciais para o preload-secure da view
+    // Auto-login
     if (perfil.usuariodaferramenta && perfil.senhadaferramenta) {
         const sendCredentials = () => {
             if (!view.webContents.isDestroyed()) {
@@ -904,70 +1007,147 @@ function createSecureWindow(perfil, isolatedSession, storageData) {
         view.webContents.on('did-navigate', sendCredentials);
     }
 
-    // Injetar sessão data na view
-    ipcMain.once('request-session-data', (e) => {
-        if (!view.webContents.isDestroyed() && e.sender === view.webContents) {
-            e.sender.send('inject-session-data', storageData);
-        }
+    // Session data injection (usando webContents.ipc para evitar conflito entre abas)
+    view.webContents.ipc.once('request-session-data', (e) => {
+        e.sender.send('inject-session-data', storageData);
     });
-    ipcMain.once('get-initial-session-data', (e) => {
-        if (!view.webContents.isDestroyed() && e.sender === view.webContents) {
-            e.returnValue = storageData || null;
-        } else {
-            e.returnValue = null;
-        }
+    view.webContents.ipc.once('get-initial-session-data', (e) => {
+        e.returnValue = storageData || null;
     });
 
     // Downloads
-    setupDownloadManager(mainWindow, view, isolatedSession);
+    setupDownloadManager(view, isolatedSession);
 
-    // Limpeza ao fechar
-    mainWindow.on('closed', () => {
-        proxyCredentials.delete(viewId);
-        windowProfiles.delete(viewId);
-        windowViews.delete(mainWindow.id);
+    // Atalhos de teclado na view (a view recebe input quando ativa)
+    view.webContents.on('before-input-event', (event, input) => {
+        handleTabShortcut(event, input);
+        // F12 DevTools em dev
+        if (IS_DEV && input.key === 'F12' && input.type === 'keyDown') {
+            event.preventDefault();
+            if (!view.webContents.isDestroyed()) view.webContents.openDevTools({ mode: 'detach' });
+        }
     });
 
-    // ★ F12: Abrir DevTools APENAS em modo desenvolvimento
-    if (IS_DEV) {
-        mainWindow.webContents.on('before-input-event', (event, input) => {
-            if (input.key === 'F12' && input.type === 'keyDown') {
-                event.preventDefault();
-                if (!view.webContents.isDestroyed()) {
-                    view.webContents.openDevTools({ mode: 'detach' });
-                }
-            }
-        });
+    // Enviar tab-added para toolbar
+    sendToToolbar('tab-added', {
+        tabId,
+        title: tabEntry.title,
+        favicon: null,
+        isActive: true
+    });
+
+    // Notificar Lovable: aba aberta
+    sendToLovable('mp-tab-opened', { tabId, perfilId: perfil.id, url: perfil.link, title: tabEntry.title });
+
+    // Ativar esta aba
+    activateTab(tabId);
+
+    return tabEntry;
+}
+
+/**
+ * Ativa uma aba (mostra sua BrowserView).
+ */
+function activateTab(tabId) {
+    const tab = tabs.get(tabId);
+    if (!tab || !browserWindow || browserWindow.isDestroyed()) return;
+
+    activeTabId = tabId;
+
+    // Trocar BrowserView visivel
+    browserWindow.setBrowserView(tab.view);
+    tab.view.setBounds(getViewBounds(browserWindow, tab.downloadsPanelOpen));
+    tab.view.setAutoResize({ width: !tab.downloadsPanelOpen, height: true, horizontal: false, vertical: false });
+
+    // Informar toolbar
+    browserWindow.webContents.send('tab-activated', { tabId });
+    browserWindow.webContents.send('url-updated', tab.url || tab.view.webContents.getURL());
+    browserWindow.webContents.send('page-loading', tab.isLoading);
+}
+
+/**
+ * Fecha uma aba.
+ */
+function closeTab(tabId) {
+    const tab = tabs.get(tabId);
+    if (!tab) return;
+
+    // Se e a ultima aba, fechar a janela inteira
+    if (tabs.size === 1) {
+        if (browserWindow && !browserWindow.isDestroyed()) browserWindow.close();
+        return;
     }
 
-    // Mostrar quando pronto
-    mainWindow.once('ready-to-show', () => mainWindow.show());
+    // Se fechando a aba ativa, ativar a adjacente
+    if (activeTabId === tabId) {
+        const tabIds = Array.from(tabs.keys());
+        const idx = tabIds.indexOf(tabId);
+        const nextIdx = idx < tabIds.length - 1 ? idx + 1 : idx - 1;
+        activateTab(tabIds[nextIdx]);
+    }
 
-    return { mainWindow, view };
+    // Limpar
+    const viewId = tab.view.webContents.id;
+    if (browserWindow && !browserWindow.isDestroyed()) {
+        browserWindow.removeBrowserView(tab.view);
+    }
+    try { tab.view.webContents.destroy(); } catch {}
+    proxyCredentials.delete(viewId);
+    proxyFallbackState.delete(viewId);
+    for (const [key] of proxyAuthAttempts) {
+        if (key.startsWith(`${viewId}-`)) proxyAuthAttempts.delete(key);
+    }
+    if (tab.perfil?.id) perfilIdToTab.delete(tab.perfil.id);
+    tabs.delete(tabId);
+
+    // Informar toolbar
+    if (browserWindow && !browserWindow.isDestroyed()) {
+        browserWindow.webContents.send('tab-removed', tabId);
+    }
+
+    // Notificar Lovable: aba fechada
+    sendToLovable('mp-tab-closed', { tabId, perfilId: tab.perfil?.id });
 }
 
 // ===================================================================
 // DOWNLOADS
 // ===================================================================
-function setupDownloadManager(mainWindow, view, isolatedSession) {
-    // Pasta temporária para downloads em andamento
-    const tempDownloadDir = path.join(app.getPath('temp'), 'multiprime-downloads');
-    if (!fs.existsSync(tempDownloadDir)) fs.mkdirSync(tempDownloadDir, { recursive: true });
+// Fila global de dialogos de download (compartilhada entre abas)
+const dlTempDir = path.join(app.getPath('temp'), 'multiprime-downloads');
+let dlDialogQueue = [];
+let dlDialogBusy = false;
 
-    // Fila de downloads para evitar múltiplos diálogos simultâneos
-    let dialogQueue = [];
-    let dialogBusy = false;
+function setupDownloadManager(view, isolatedSession) {
+    // Garantir pasta temp
+    if (!fs.existsSync(dlTempDir)) fs.mkdirSync(dlTempDir, { recursive: true });
+
+    // Encontrar perfilId associado a esta view
+    const getPerfilId = () => {
+        for (const [, tab] of tabs) {
+            if (tab.view === view) return tab.perfil?.id;
+        }
+        return null;
+    };
+
+    function sendDl(channel, data) {
+        if (browserWindow && !browserWindow.isDestroyed()) {
+            browserWindow.webContents.send(channel, data);
+        }
+    }
 
     async function processDialogQueue() {
-        if (dialogBusy || dialogQueue.length === 0) return;
-        dialogBusy = true;
+        if (dlDialogBusy || dlDialogQueue.length === 0) return;
+        dlDialogBusy = true;
 
-        const { tempPath, filename, downloadId, mainWindow: mw } = dialogQueue.shift();
+        const { tempPath, filename, downloadId } = dlDialogQueue.shift();
         const parsedName = path.parse(filename);
         const extNoDot = parsedName.ext ? parsedName.ext.replace('.', '') : '*';
 
         try {
-            const { canceled, filePath } = await dialog.showSaveDialog(mw, {
+            const win = browserWindow && !browserWindow.isDestroyed() ? browserWindow : null;
+            if (!win) { try { fs.unlinkSync(tempPath); } catch {} dlDialogBusy = false; processDialogQueue(); return; }
+
+            const { canceled, filePath } = await dialog.showSaveDialog(win, {
                 title: 'Salvar download como...',
                 defaultPath: path.join(app.getPath('downloads'), filename),
                 filters: [
@@ -979,24 +1159,22 @@ function setupDownloadManager(mainWindow, view, isolatedSession) {
             if (canceled || !filePath) {
                 try { fs.unlinkSync(tempPath); } catch {}
             } else {
-                moveFileToFinal(tempPath, filePath, downloadId, mw);
+                moveFileToFinal(tempPath, filePath, downloadId);
             }
         } catch {
             try { fs.unlinkSync(tempPath); } catch {}
         }
 
-        dialogBusy = false;
+        dlDialogBusy = false;
         processDialogQueue();
     }
 
     isolatedSession.on('will-download', (event, item) => {
-        if (mainWindow.isDestroyed()) return item.cancel();
+        if (!browserWindow || browserWindow.isDestroyed()) return item.cancel();
 
         const url = item.getURL();
-        const totalBytes = item.getTotalBytes();
         const isBlob = url.startsWith('blob:');
 
-        // Detectar nome e extensão do arquivo
         let filename = item.getFilename();
         if (!filename) {
             const mimeType = item.getMimeType();
@@ -1015,81 +1193,57 @@ function setupDownloadManager(mainWindow, view, isolatedSession) {
             filename = `download-${Date.now()}${ext}`;
         }
 
-
         const downloadId = `dl-${crypto.randomUUID()}`;
 
         if (isBlob) {
-            // ★ BLOB URL: Salvar direto em Downloads (instantâneo, evita expiração)
-            // Depois de salvo, oferecer "Salvar como" para mover se quiser
             const downloadsPath = findUniquePath(path.join(app.getPath('downloads'), filename));
             item.setSavePath(downloadsPath);
-
-
-            if (!mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('download-started', { id: downloadId, filename });
-            }
+            sendDl('download-started', { id: downloadId, filename });
 
             item.on('updated', (e, state) => {
-                if (mainWindow.isDestroyed()) return;
                 const total = item.getTotalBytes();
                 if (total <= 0 || state !== 'progressing') return;
-                const progress = Math.round((item.getReceivedBytes() / total) * 100);
-                mainWindow.webContents.send('download-progress', { id: downloadId, progress });
+                sendDl('download-progress', { id: downloadId, progress: Math.round((item.getReceivedBytes() / total) * 100) });
             });
 
             item.on('done', (e, state) => {
-
-                if (state !== 'completed') {
-                    try { fs.unlinkSync(downloadsPath); } catch {}
-                }
-
-                if (!mainWindow.isDestroyed()) {
-                    mainWindow.webContents.send('download-complete', {
-                        id: downloadId, state,
-                        path: state === 'completed' ? downloadsPath : null,
-                        progress: state === 'completed' ? 100 : 0
-                    });
-                }
+                if (state !== 'completed') { try { fs.unlinkSync(downloadsPath); } catch {} }
+                sendDl('download-complete', {
+                    id: downloadId, state,
+                    path: state === 'completed' ? downloadsPath : null,
+                    progress: state === 'completed' ? 100 : 0
+                });
+                logEvent(state === 'completed' ? 'download_complete' : 'download_failed', { perfilId: getPerfilId(), filename });
             });
 
         } else {
-            // ★ HTTP URL: Salvar no temp primeiro, depois "Salvar como"
-            const tempPath = path.join(tempDownloadDir, `${crypto.randomUUID()}_${filename}`);
+            const tempPath = path.join(dlTempDir, `${crypto.randomUUID()}_${filename}`);
             item.setSavePath(tempPath);
-
-            if (!mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('download-started', { id: downloadId, filename });
-            }
+            sendDl('download-started', { id: downloadId, filename });
 
             let lastProgress = 0, lastUpdate = 0;
-
             item.on('updated', (e, state) => {
-                if (mainWindow.isDestroyed() || state !== 'progressing') return;
+                if (state !== 'progressing') return;
                 const total = item.getTotalBytes();
                 if (total <= 0) return;
                 const progress = Math.round((item.getReceivedBytes() / total) * 100);
                 const now = Date.now();
                 if (progress > lastProgress && now - lastUpdate > 250) {
-                    mainWindow.webContents.send('download-progress', { id: downloadId, progress });
+                    sendDl('download-progress', { id: downloadId, progress });
                     lastProgress = progress;
                     lastUpdate = now;
                 }
             });
 
             item.on('done', (e, state) => {
-
                 if (state !== 'completed') {
                     try { fs.unlinkSync(tempPath); } catch {}
-                    if (!mainWindow.isDestroyed()) {
-                        mainWindow.webContents.send('download-complete', {
-                            id: downloadId, state, path: null, progress: 0
-                        });
-                    }
+                    sendDl('download-complete', { id: downloadId, state, path: null, progress: 0 });
+                    logEvent('download_failed', { perfilId: getPerfilId(), filename });
                     return;
                 }
-
-                // Download completou → enfileirar "Salvar como"
-                dialogQueue.push({ tempPath, filename, downloadId, mainWindow });
+                logEvent('download_complete', { perfilId: getPerfilId(), filename });
+                dlDialogQueue.push({ tempPath, filename, downloadId });
                 processDialogQueue();
             });
         }
@@ -1097,35 +1251,20 @@ function setupDownloadManager(mainWindow, view, isolatedSession) {
 }
 
 // Mover arquivo do temp para o destino final escolhido pelo usuário
-function moveFileToFinal(tempPath, destPath, downloadId, mainWindow) {
+function moveFileToFinal(tempPath, destPath, downloadId) {
+    const sendDl = (data) => {
+        if (browserWindow && !browserWindow.isDestroyed()) {
+            browserWindow.webContents.send('download-complete', data);
+        }
+    };
     try {
-        // Se já existe, gerar nome único
         const finalPath = findUniquePath(destPath);
-
-        // Tentar rename (rápido, mesmo disco)
-        try {
-            fs.renameSync(tempPath, finalPath);
-        } catch {
-            // Se rename falhar (disco diferente), copiar e deletar
-            fs.copyFileSync(tempPath, finalPath);
-            try { fs.unlinkSync(tempPath); } catch {}
-        }
-
-
-        if (!mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('download-complete', {
-                id: downloadId, state: 'completed',
-                path: finalPath, progress: 100
-            });
-        }
+        try { fs.renameSync(tempPath, finalPath); }
+        catch { fs.copyFileSync(tempPath, finalPath); try { fs.unlinkSync(tempPath); } catch {} }
+        sendDl({ id: downloadId, state: 'completed', path: finalPath, progress: 100 });
     } catch (err) {
         console.error('[DOWNLOAD] Erro ao mover arquivo:', err);
-        if (!mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('download-complete', {
-                id: downloadId, state: 'interrupted',
-                path: tempPath, progress: 100
-            });
-        }
+        sendDl({ id: downloadId, state: 'interrupted', path: tempPath, progress: 100 });
     }
 }
 
@@ -1133,12 +1272,11 @@ function moveFileToFinal(tempPath, destPath, downloadId, mainWindow) {
 // IPC — TOOLBAR COMMANDS
 // ===================================================================
 
-function getViewForSender(event) {
-    // A toolbar envia comandos. Precisamos encontrar o BrowserView associado.
-    const mainWindow = BrowserWindow.fromWebContents(event.sender);
-    if (!mainWindow || mainWindow.isDestroyed()) return null;
-    const entry = windowViews.get(mainWindow.id);
-    return entry || null;
+function getViewForSender() {
+    // Retorna a aba ativa da janela unica
+    if (!browserWindow || browserWindow.isDestroyed() || !activeTabId) return null;
+    const tab = tabs.get(activeTabId);
+    return tab ? { mainWindow: browserWindow, view: tab.view, downloadsPanelOpen: tab.downloadsPanelOpen } : null;
 }
 
 ipcMain.on('navigate-back', (e) => {
@@ -1206,16 +1344,14 @@ ipcMain.on('open-external', (e, url) => {
 // ★ Toggle do painel de downloads: encolher BrowserView para o painel ficar visível
 
 ipcMain.on('downloads-panel-toggle', (e, isOpen) => {
-    const mainWindow = BrowserWindow.fromWebContents(e.sender);
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    const entry = windowViews.get(mainWindow.id);
-    if (!entry) return;
+    if (!activeTabId) return;
+    const tab = tabs.get(activeTabId);
+    if (!tab) return;
 
-    entry.downloadsPanelOpen = isOpen;
-    updateViewBounds(mainWindow);
+    tab.downloadsPanelOpen = isOpen;
+    updateViewBounds();
 
-    // Ajustar auto-resize: quando painel está aberto, não auto-resize largura
-    entry.view.setAutoResize({
+    tab.view.setAutoResize({
         width: !isOpen,
         height: true,
         horizontal: false,
@@ -1227,14 +1363,12 @@ ipcMain.on('downloads-panel-toggle', (e, isOpen) => {
 // EXPORTAÇÃO DE SESSÃO
 // ===================================================================
 ipcMain.on('initiate-full-session-export', async (event, storageData) => {
-    const mainWindow = BrowserWindow.fromWebContents(event.sender);
-    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (!browserWindow || browserWindow.isDestroyed() || !activeTabId) return;
+    const tab = tabs.get(activeTabId);
+    if (!tab) return;
 
-    const entry = windowViews.get(mainWindow.id);
-    if (!entry) return;
-
-    const viewContents = entry.view.webContents;
-    const perfil = windowProfiles.get(viewContents.id);
+    const viewContents = tab.view.webContents;
+    const perfil = tab.perfil;
 
     try {
         const cookies = await viewContents.session.cookies.get({});
@@ -1251,26 +1385,26 @@ ipcMain.on('initiate-full-session-export', async (event, storageData) => {
         if (perfil?.ftp && perfil?.senha) {
             try {
                 await uploadToGitHub(perfil.ftp, jsonContent, perfil.senha, `Atualizar sessão - ${new Date().toISOString()}`);
-                await dialog.showMessageBox(mainWindow, {
+                await dialog.showMessageBox(browserWindow, {
                     type: 'info', title: 'Exportação Concluída',
                     message: 'Sessão salva com sucesso no GitHub (criptografada)!',
                     detail: `Arquivo: ${perfil.ftp}`
                 });
             } catch (err) {
                 console.error('[EXPORT] Falha GitHub:', err);
-                const { response } = await dialog.showMessageBox(mainWindow, {
+                const { response } = await dialog.showMessageBox(browserWindow, {
                     type: 'warning', title: 'Erro GitHub',
                     message: 'Falha no GitHub. Salvar localmente?',
                     buttons: ['Salvar Localmente', 'Cancelar']
                 });
-                if (response === 0) await saveSessionLocally(mainWindow, jsonContent);
+                if (response === 0) await saveSessionLocally(browserWindow, jsonContent);
             }
         } else {
-            await saveSessionLocally(mainWindow, jsonContent);
+            await saveSessionLocally(browserWindow, jsonContent);
         }
     } catch (err) {
         console.error('[EXPORT] Erro:', err);
-        await dialog.showMessageBox(mainWindow, {
+        await dialog.showMessageBox(browserWindow, {
             type: 'error', title: 'Erro', message: 'Erro ao exportar sessão.', detail: err.message
         });
     }
@@ -1311,10 +1445,26 @@ async function handleAbrirNavegador(event, rawPerfil) {
         perfil = rawPerfil;
     }
 
+    // Deduplicacao: se perfil.id ja esta aberto, focar a aba existente
+    if (perfil?.id && perfilIdToTab.has(perfil.id)) {
+        const existingTabId = perfilIdToTab.get(perfil.id);
+        if (tabs.has(existingTabId)) {
+            activateTab(existingTabId);
+            // Restaurar janela se minimizada
+            if (browserWindow && !browserWindow.isDestroyed()) {
+                if (browserWindow.isMinimized()) browserWindow.restore();
+                browserWindow.focus();
+            }
+            console.log(`[ABAS] Perfil ${perfil.id} já aberto → focando aba existente`);
+            return;
+        }
+        // Tab nao existe mais, limpar referencia
+        perfilIdToTab.delete(perfil.id);
+    }
+
     const windowId = `profile_${Date.now()}`;
     const partition = `persist:${windowId}`;
     const isolatedSession = session.fromPartition(partition);
-    let mainWindow = null;
 
     try {
         if (!perfil?.link) throw new Error('Perfil ou link inválido.');
@@ -1341,6 +1491,7 @@ async function handleAbrirNavegador(event, rawPerfil) {
                 if (fileContent) sessionData = JSON.parse(fileContent);
             } catch (err) {
                 console.error(`[SESSÃO ${windowId}] Falha GitHub:`, err.message);
+                logEvent('session_failed', { perfilId: perfil.id, erro: err.message, ftp: perfil.ftp });
             }
         }
 
@@ -1374,6 +1525,7 @@ async function handleAbrirNavegador(event, rawPerfil) {
             }
 
             await isolatedSession.cookies.flushStore();
+            logEvent('session_loaded', { perfilId: perfil.id, cookieCount: ok, cookieFailed: fail, ftp: perfil.ftp });
         }
 
         const storageData = {
@@ -1426,36 +1578,91 @@ async function handleAbrirNavegador(event, rawPerfil) {
             }
         );
 
-        // CRIAR JANELA COM BROWSERVIEW
-        const { mainWindow: mw, view } = createSecureWindow(perfil, isolatedSession, storageData);
-        mainWindow = mw;
+        // CRIAR JANELA (se primeira aba) + CRIAR ABA
+        if (!browserWindow || browserWindow.isDestroyed()) {
+            createBrowserWindow();
+        }
+
+        const tabEntry = createTab(perfil, isolatedSession, storageData);
+        const view = tabEntry.view;
+        const viewId = view.webContents.id;
 
         // Proxy credentials
         if (perfil.proxy?.username) {
-            proxyCredentials.set(view.webContents.id, {
+            proxyCredentials.set(viewId, {
                 username: perfil.proxy.username,
                 password: perfil.proxy.password ?? ''
             });
         }
 
-        // Carregar URL no BrowserView
+        // Registrar fallbacks
+        if (perfil.proxy?.host && Array.isArray(perfil.proxyFallbacks) && perfil.proxyFallbacks.length > 0) {
+            proxyFallbackState.set(viewId, {
+                fallbacks: perfil.proxyFallbacks.slice(0, 2),
+                currentIndex: -1,
+                session: isolatedSession,
+                perfil
+            });
+            console.log(`[PROXY FALLBACK] View ${viewId}: ${perfil.proxyFallbacks.length} fallback(s) registrado(s)`);
+        }
+
+        // Detectar erros de conexao/proxy e tentar fallback
+        view.webContents.on('did-fail-load', async (event, errorCode, errorDescription) => {
+            const proxyErrors = [-102, -105, -106, -109, -118, -130, -137, -138];
+            if (proxyErrors.includes(errorCode) && proxyFallbackState.has(view.webContents.id)) {
+                console.warn(`[PROXY FALLBACK] Erro de conexão ${errorCode} (${errorDescription}). Tentando fallback...`);
+                const switched = await switchToNextProxy(view.webContents.id);
+                if (switched) {
+                    try { if (!view.webContents.isDestroyed()) view.webContents.reload(); } catch {}
+                }
+            }
+        });
+
+        // Carregar URL
         try {
             await view.webContents.loadURL(perfil.link);
         } catch (err) {
-            // NUNCA destruir a janela por erro de navegação.
-            // O navegador deve ficar aberto mesmo que o site falhe.
             console.warn(`[NAV] Erro ao carregar ${perfil.link}: ${err.code || err.message}`);
         }
 
     } catch (err) {
         console.error('--- [ERRO FATAL] ---', err);
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
     }
 }
 
 // Registrar AMBOS os handlers: plain e criptografado
 ipcMain.on('abrir-navegador', (event, perfil) => handleAbrirNavegador(event, perfil));
 ipcMain.on('abrir-navegador-secure', (event, encryptedPerfil) => handleAbrirNavegador(event, encryptedPerfil));
+
+// IPC para abas (toolbar → main)
+ipcMain.on('switch-tab', (e, tabId) => {
+    if (tabs.has(tabId)) activateTab(tabId);
+});
+ipcMain.on('close-tab', (e, tabId) => {
+    if (tabs.has(tabId)) closeTab(tabId);
+});
+
+// ===================================================================
+// TEMA (recebe do Lovable, repassa para todas as toolbars)
+// ===================================================================
+let currentTema = 'dark'; // padrão
+
+ipcMain.on('set-tema', (event, tema) => {
+    currentTema = tema;
+    // Enviar para a toolbar do browser (janela de abas)
+    if (browserWindow && !browserWindow.isDestroyed()) {
+        browserWindow.webContents.send('theme-changed', tema);
+    }
+    // Enviar para a titlebar principal (janela do Lovable)
+    const allWindows = BrowserWindow.getAllWindows();
+    for (const win of allWindows) {
+        try {
+            if (!win.isDestroyed() && win !== browserWindow) {
+                win.webContents.send('theme-changed', tema);
+            }
+        } catch {}
+    }
+});
 
 // ===================================================================
 // PROXY AUTH
@@ -1476,30 +1683,31 @@ const nossoManipuladorDeLogin = (event, webContents, request, authInfo, callback
     proxyAuthAttempts.set(key, attempts);
 
     if (attempts > 3) {
-        console.error(`[PROXY AUTH] ❌ Máximo de tentativas atingido para ${host} (wcId: ${wcId}). Cancelando.`);
-        callback(); // Sem credenciais → cancela
-        // Reset após 30s para permitir nova tentativa
-        setTimeout(() => proxyAuthAttempts.delete(key), 30000);
+        console.error(`[PROXY AUTH] ❌ Máximo de tentativas atingido para ${host} (wcId: ${wcId}). Tentando fallback...`);
+        logEvent('proxy_auth_failed', { viewId: wcId, host });
+        proxyAuthAttempts.delete(key);
+
+        // Tentar próximo proxy via fallback
+        switchToNextProxy(wcId).then(switched => {
+            if (switched) {
+                // Recarregar a página com o novo proxy
+                try { if (!webContents.isDestroyed()) webContents.reload(); } catch {}
+            } else {
+                console.error(`[PROXY AUTH] ❌ Sem fallbacks restantes para view ${wcId}`);
+            }
+        });
+
+        callback(); // Cancela esta tentativa
         return;
     }
 
-    // Buscar credenciais — tentar pelo webContents.id do view
-    let credentials = proxyCredentials.get(wcId);
-
-    // Se não encontrou, buscar por qualquer entrada (pode ser sub-frame ou service worker)
-    if (!credentials) {
-        for (const [id, creds] of proxyCredentials) {
-            credentials = creds;
-            console.warn(`[PROXY AUTH] Credenciais não encontradas para wcId ${wcId}, usando do wcId ${id}`);
-            break;
-        }
-    }
+    // Buscar credenciais pelo webContents.id exato (sem fallback generico para evitar credenciais erradas com multi-abas)
+    const credentials = proxyCredentials.get(wcId);
 
     if (credentials) {
         callback(credentials.username, credentials.password);
     } else {
-        console.error(`[PROXY AUTH] ❌ NENHUMA credencial disponível para ${host} (wcId: ${wcId})`);
-        console.error(`[PROXY AUTH] Credenciais armazenadas: ${[...proxyCredentials.keys()].join(', ') || 'nenhuma'}`);
+        console.error(`[PROXY AUTH] ❌ NENHUMA credencial para wcId ${wcId} (host: ${host})`);
         callback();
     }
 };
@@ -1556,19 +1764,36 @@ function startApp() {
         mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!DOCTYPE html>
 <html><head><style>
 * { margin:0; padding:0; box-sizing:border-box; }
+:root {
+  --tb-bg: linear-gradient(180deg, #f0f0f0 0%, #e5e5e5 100%);
+  --tb-border: rgba(0,0,0,0.08);
+  --tb-title: rgba(0,0,0,0.65);
+  --tb-btn: rgba(0,0,0,0.45);
+  --tb-btn-hover-bg: rgba(0,0,0,0.06);
+  --tb-btn-hover: rgba(0,0,0,0.8);
+}
+:root.dark {
+  --tb-bg: linear-gradient(180deg, #1a1a1a 0%, #111111 100%);
+  --tb-border: rgba(255,255,255,0.06);
+  --tb-title: rgba(255,255,255,0.7);
+  --tb-btn: rgba(255,255,255,0.55);
+  --tb-btn-hover-bg: rgba(255,255,255,0.08);
+  --tb-btn-hover: rgba(255,255,255,0.9);
+}
 body {
   height: ${MAIN_BAR_HEIGHT}px;
-  background: linear-gradient(180deg, #1a1a1a 0%, #111111 100%);
+  background: var(--tb-bg);
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 12px;
   -webkit-app-region: drag;
   user-select: none;
   font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid var(--tb-border);
   overflow: hidden;
+  transition: background 0.2s;
 }
 .title {
-  display: flex; align-items: center; color: rgba(255,255,255,0.7);
+  display: flex; align-items: center; color: var(--tb-title);
 }
 .title img { width: 18px; height: 18px; margin-right: 8px; }
 .title span { font-weight: 500; letter-spacing: 0.3px; }
@@ -1576,11 +1801,11 @@ body {
 .btn {
   width: 28px; height: 28px;
   background: transparent; border: none; border-radius: 6px;
-  color: rgba(255,255,255,0.55); cursor: pointer;
+  color: var(--tb-btn); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   transition: all 0.15s;
 }
-.btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.9); }
+.btn:hover { background: var(--tb-btn-hover-bg); color: var(--tb-btn-hover); }
 .close:hover { background: #e81123; color: white; }
 </style></head><body>
 <div class="title">
@@ -1598,10 +1823,15 @@ body {
     <svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
   </button>
 </div>
+<script>
+  require('electron').ipcRenderer.on('theme-changed', (e, tema) => {
+    document.documentElement.classList.toggle('dark', tema === 'dark');
+  });
+</script>
 </body></html>`));
 
         // BrowserView para o Lovable — carrega ABAIXO da titlebar
-        const lovableView = new BrowserView({
+        lovableView = new BrowserView({
             webPreferences: {
                 preload: path.join(__dirname, 'preload.js'),
                 contextIsolation: false,
@@ -1665,10 +1895,14 @@ body {
             });
         };
 
-        // Tela de update (só aparece se tiver atualização)
-        const showUpdateScreen = (message, percent) => {
+        // Tela de update (carrega uma vez, atualiza via JS — sem recarregar)
+        let updateScreenLoaded = false;
+
+        const loadUpdateScreen = () => {
             if (lovableView.webContents.isDestroyed()) return;
             if (!mainWindow.isVisible()) { mainWindow.maximize(); mainWindow.show(); }
+            if (updateScreenLoaded) return;
+            updateScreenLoaded = true;
             lovableView.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!DOCTYPE html>
 <html><head><style>
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -1683,15 +1917,26 @@ body {
 h1 { font-size: 18px; font-weight: 500; margin-bottom: 10px; color: rgba(255,255,255,0.85); }
 p { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 20px; }
 .bar-bg { width: 280px; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden; }
-.bar-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #60a5fa); border-radius: 2px; width: ${percent}%; transition: width 0.3s ease; }
+.bar-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #60a5fa); border-radius: 2px; width: 0%; transition: width 0.4s ease; }
 .pct { font-size: 12px; color: rgba(255,255,255,0.3); margin-top: 6px; }
 </style></head><body>
 <div class="logo"><svg width="40" height="40" viewBox="0 0 24 24"><path d="M5 20h14v2H5v-2zm1-2h12l1-4h-3V8h1V4h-2V2H10v2H8v4h1v6H6l1 4zm3-6V8h6v4h-6z" fill="rgba(255,255,255,0.6)"/></svg></div>
-<h1>${message}</h1>
-<p>O aplicativo será reiniciado automaticamente</p>
-<div class="bar-bg"><div class="bar-fill"></div></div>
-<div class="pct">${Math.round(percent)}%</div>
+<h1 id="msg">Atualizando MultiPrime...</h1>
+<p id="sub">O aplicativo será reiniciado automaticamente</p>
+<div class="bar-bg"><div class="bar-fill" id="bar"></div></div>
+<div class="pct" id="pct">0%</div>
 </body></html>`));
+        };
+
+        const updateScreenProgress = (message, percent) => {
+            if (lovableView.webContents.isDestroyed()) return;
+            lovableView.webContents.executeJavaScript(`
+                try {
+                    document.getElementById('msg').textContent = '${message.replace(/'/g, "\\'")}';
+                    document.getElementById('bar').style.width = '${Math.round(percent)}%';
+                    document.getElementById('pct').textContent = '${Math.round(percent)}%';
+                } catch(e) {}
+            `).catch(() => {});
         };
 
 
@@ -1700,6 +1945,7 @@ p { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 20px; }
             let updateFound = false;
             let lovableLoaded = false;
             let fallback = null;
+            let downloadTimeout = null;
 
             const safeLoadLovable = () => {
                 if (lovableLoaded || updateFound) return;
@@ -1708,12 +1954,26 @@ p { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 20px; }
                 loadLovable();
             };
 
+            const abortUpdateAndLoad = (reason) => {
+                console.warn(`[APP-UPDATER] Abortando update: ${reason}`);
+                clearTimeout(downloadTimeout);
+                updateFound = false;
+                updateScreenLoaded = false;
+                safeLoadLovable();
+            };
+
             autoUpdater.on('update-available', (info) => {
                 updateFound = true;
                 clearTimeout(fallback);
                 console.log(`[APP-UPDATER] ✅ Nova versão: ${info.version}. Baixando...`);
-                showUpdateScreen('Atualizando MultiPrime...', 0);
-                autoUpdater.downloadUpdate();
+                loadUpdateScreen();
+                autoUpdater.downloadUpdate().catch(err => {
+                    abortUpdateAndLoad(`Falha ao iniciar download: ${err.message}`);
+                });
+                // Timeout: se o download não completar em 2 minutos, abortar e carregar o app
+                downloadTimeout = setTimeout(() => {
+                    abortUpdateAndLoad('Download timeout (2 min)');
+                }, 120000);
             });
 
             autoUpdater.on('update-not-available', () => {
@@ -1723,38 +1983,42 @@ p { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 20px; }
 
             autoUpdater.on('download-progress', (progress) => {
                 const pct = Math.round(progress.percent);
-                console.log(`[APP-UPDATER] Baixando: ${pct}%`);
-                showUpdateScreen('Baixando atualização...', pct);
+                // Só loga a cada 10% para não poluir
+                if (pct % 10 === 0) console.log(`[APP-UPDATER] Baixando: ${pct}%`);
+                updateScreenProgress('Baixando atualização...', pct);
             });
 
             autoUpdater.on('update-downloaded', (info) => {
+                clearTimeout(downloadTimeout);
                 console.log(`[APP-UPDATER] ✅ Versão ${info.version} pronta. Reiniciando...`);
-                showUpdateScreen('Instalando... Reiniciando em instantes', 100);
+                updateScreenProgress('Instalando... Reiniciando em instantes', 100);
+
+                // Aguardar 2s para o usuario ver a mensagem, depois instalar
                 setTimeout(() => {
                     try {
-                        // Fechar todas as janelas para não bloquear o quit
-                        const allWindows = BrowserWindow.getAllWindows();
-                        allWindows.forEach(w => {
-                            try { w.removeAllListeners('close'); w.destroy(); } catch {}
-                        });
-                        // Instalar e reiniciar
-                        autoUpdater.quitAndInstall(true, true);
+                        autoUpdater.quitAndInstall(false, true);
                     } catch (err) {
-                        console.error('[APP-UPDATER] Erro ao instalar:', err);
-                        // Fallback: forçar quit
-                        app.quit();
+                        console.error('[APP-UPDATER] Erro quitAndInstall:', err);
+                        try { app.quit(); } catch {}
                     }
                 }, 2000);
-                // Fallback final: se nada funcionou em 10s, forçar saída
+
+                // Fallback: se quitAndInstall não fechou o app em 8s, forçar saída
                 setTimeout(() => {
                     console.warn('[APP-UPDATER] Fallback: forçando saída');
-                    app.exit(0);
+                    process.exit(0);
                 }, 10000);
             });
 
             autoUpdater.on('error', (err) => {
                 console.warn('[APP-UPDATER] Erro (não crítico):', err.message);
-                safeLoadLovable();
+                clearTimeout(downloadTimeout);
+                if (updateFound) {
+                    // Update estava em andamento e falhou — carregar o app normalmente
+                    abortUpdateAndLoad(`Erro no updater: ${err.message}`);
+                } else {
+                    safeLoadLovable();
+                }
             });
 
             // Fallback: se em 5s nenhum evento disparou (ex: modo dev)

@@ -7,20 +7,69 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
+  /* ===== TEMA: VARIAVEIS ===== */
+  :root {
+    --bg-primary: #f5f5f5;
+    --bg-toolbar: rgba(245, 245, 245, 0.96);
+    --bg-urlbar: rgba(228, 228, 228, 0.95);
+    --bg-panel: #f0f0f0;
+    --bg-btn-hover: rgba(0, 0, 0, 0.08);
+    --bg-btn: rgba(0, 0, 0, 0.04);
+    --border-subtle: rgba(0, 0, 0, 0.08);
+    --border-focus: rgba(59, 130, 246, 0.5);
+    --text-primary: #1a1a1a;
+    --text-secondary: #555;
+    --text-tertiary: #888;
+    --text-url: #333;
+    --text-placeholder: rgba(0, 0, 0, 0.35);
+    --close-hover: #e74c3c;
+    --toast-bg: rgba(245, 245, 245, 0.97);
+    --toast-border: rgba(0, 0, 0, 0.1);
+    --toast-shadow: rgba(0, 0, 0, 0.12);
+    --dl-action: #2563eb;
+    --dl-action-hover: #1d4ed8;
+    --dl-clear-hover-bg: rgba(231, 76, 60, 0.1);
+    --spinner-track: rgba(0, 0, 0, 0.1);
+  }
+
+  :root.dark {
+      --bg-primary: #181818;
+      --bg-toolbar: rgba(24, 24, 24, 0.96);
+      --bg-urlbar: rgba(32, 32, 32, 0.95);
+      --bg-panel: #1a1a1a;
+      --bg-btn-hover: rgba(255, 255, 255, 0.1);
+      --bg-btn: rgba(255, 255, 255, 0.04);
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-focus: rgba(100, 149, 237, 0.5);
+      --text-primary: #ecf0f1;
+      --text-secondary: #ccc;
+      --text-tertiary: #888;
+      --text-url: #e8e8e8;
+      --text-placeholder: rgba(255, 255, 255, 0.3);
+      --close-hover: #e74c3c;
+      --toast-bg: rgba(32, 32, 32, 0.97);
+      --toast-border: rgba(255, 255, 255, 0.08);
+      --toast-shadow: rgba(0, 0, 0, 0.4);
+      --dl-action: #60a5fa;
+      --dl-action-hover: #93bbfc;
+      --dl-clear-hover-bg: rgba(231, 76, 60, 0.1);
+      --spinner-track: rgba(255, 255, 255, 0.15);
+  }
+
   html, body {
     height: 100%;
     overflow: hidden;
-    background: #181818;
+    background: var(--bg-primary);
     font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     user-select: none;
-    color: #ecf0f1;
+    color: var(--text-primary);
   }
 
   /* ===== TOOLBAR ===== */
   .toolbar {
     width: 100%;
     height: 44px;
-    background: rgba(24, 24, 24, 0.96);
+    background: var(--bg-toolbar);
     backdrop-filter: saturate(140%) blur(12px);
     -webkit-backdrop-filter: saturate(140%) blur(12px);
     display: grid;
@@ -28,7 +77,7 @@
     align-items: center;
     gap: 10px;
     padding: 0 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid var(--border-subtle);
     -webkit-app-region: drag;
     position: relative;
   }
@@ -88,9 +137,9 @@
   .nav-btn {
     width: 32px;
     height: 32px;
-    background: rgba(255, 255, 255, 0.04);
-    color: #ccc;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: var(--bg-btn);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
     border-radius: 8px;
     cursor: pointer;
     font-size: 15px;
@@ -102,9 +151,9 @@
   }
 
   .nav-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.16);
-    color: #fff;
+    background: var(--bg-btn-hover);
+    border-color: var(--border-subtle);
+    color: var(--text-primary);
   }
 
   .nav-btn:active { transform: scale(0.94); }
@@ -116,14 +165,14 @@
     gap: 8px;
     height: 32px;
     padding: 0 12px;
-    background: rgba(32, 32, 32, 0.95);
-    border: 1px solid rgba(255, 255, 255, 0.07);
+    background: var(--bg-urlbar);
+    border: 1px solid var(--border-subtle);
     border-radius: 10px;
     transition: border-color 0.2s;
     min-width: 0;
   }
 
-  .url-bar:focus-within { border-color: rgba(100, 149, 237, 0.5); }
+  .url-bar:focus-within { border-color: var(--border-focus); }
 
   .url-leading {
     display: flex;
@@ -147,7 +196,7 @@
   .loading-spinner {
     width: 14px;
     height: 14px;
-    border: 2px solid rgba(255,255,255,0.15);
+    border: 2px solid var(--spinner-track);
     border-top-color: #3b82f6;
     border-radius: 50%;
     display: none;
@@ -166,14 +215,14 @@
     height: 28px;
     background: transparent;
     border: none;
-    color: #e8e8e8;
+    color: var(--text-url);
     font-size: 13px;
     outline: none;
     min-width: 0;
     text-overflow: ellipsis;
   }
 
-  .url-input::placeholder { color: rgba(255, 255, 255, 0.3); }
+  .url-input::placeholder { color: var(--text-placeholder); }
 
   .status-dot {
     width: 8px;
@@ -194,23 +243,7 @@
     position: relative;
   }
 
-  .action-btn {
-    width: 32px;
-    height: 32px;
-    background: transparent;
-    color: #bbb;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    display: grid;
-    place-items: center;
-    font-size: 16px;
-    transition: all 0.15s;
-    padding: 0;
-  }
-
-  .action-btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
-  .action-btn.close:hover { background: #e74c3c; color: #fff; }
+  /* action-btn removido — window controls agora na tab bar */
 
   /* ===== BOTAO DOWNLOADS ===== */
   .downloads-btn {
@@ -218,9 +251,9 @@
     width: auto;
     padding: 0 12px;
     border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.04);
-    color: #aaa;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-btn);
+    color: var(--text-tertiary);
     font-size: 12px;
     cursor: pointer;
     transition: all 0.15s;
@@ -231,9 +264,9 @@
   }
 
   .downloads-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-    border-color: rgba(255, 255, 255, 0.15);
+    background: var(--bg-btn-hover);
+    color: var(--text-primary);
+    border-color: var(--border-subtle);
   }
 
   .downloads-badge {
@@ -265,8 +298,8 @@
     right: 0;
     width: 370px;
     bottom: 0;
-    background: #1a1a1a;
-    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border-subtle);
     z-index: 1000;
     overflow: hidden;
     display: none;
@@ -280,27 +313,27 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px 14px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid var(--border-subtle);
     flex-shrink: 0;
   }
 
   .dl-panel-title {
     font-size: 13px;
     font-weight: 600;
-    color: #e8e8e8;
+    color: var(--text-primary);
   }
 
   .dl-panel-count {
     font-size: 11px;
-    color: #888;
-    background: rgba(255,255,255,0.06);
+    color: var(--text-tertiary);
+    background: var(--bg-btn);
     padding: 2px 8px;
     border-radius: 10px;
   }
 
   .dl-clear-btn {
     font-size: 11px;
-    color: #888;
+    color: var(--text-tertiary);
     background: none;
     border: none;
     cursor: pointer;
@@ -309,7 +342,7 @@
     transition: all 0.15s;
   }
 
-  .dl-clear-btn:hover { color: #e74c3c; background: rgba(231,76,60,0.1); }
+  .dl-clear-btn:hover { color: #e74c3c; background: var(--dl-clear-hover-bg); }
 
   .dl-list {
     overflow-y: auto;
@@ -320,7 +353,7 @@
   .dl-empty {
     text-align: center;
     padding: 32px 16px;
-    color: #555;
+    color: var(--text-secondary);
     font-size: 13px;
   }
 
@@ -334,7 +367,7 @@
     transition: background 0.15s;
   }
 
-  .dl-item:hover { background: rgba(255, 255, 255, 0.03); }
+  .dl-item:hover { background: var(--bg-btn); }
 
   .dl-item-header {
     display: flex;
@@ -361,7 +394,7 @@
 
   .dl-item-name {
     font-size: 12.5px;
-    color: #ddd;
+    color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -369,13 +402,13 @@
 
   .dl-item-meta {
     font-size: 11px;
-    color: #777;
+    color: var(--text-tertiary);
     margin-top: 1px;
   }
 
   .dl-item-progress {
     height: 3px;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--border-subtle);
     border-radius: 2px;
     overflow: hidden;
     margin-top: 6px;
@@ -398,25 +431,25 @@
 
   .dl-action-link {
     font-size: 11.5px;
-    color: #60a5fa;
+    color: var(--dl-action);
     cursor: pointer;
     text-decoration: none;
     transition: color 0.15s;
   }
 
-  .dl-action-link:hover { color: #93bbfc; text-decoration: underline; }
+  .dl-action-link:hover { color: var(--dl-action-hover); text-decoration: underline; }
 
   /* ===== TOAST ===== */
   .toast {
     position: fixed;
     bottom: -60px;
     right: 20px;
-    background: rgba(32, 32, 32, 0.97);
-    color: #ecf0f1;
+    background: var(--toast-bg);
+    color: var(--text-primary);
     padding: 10px 16px;
     border-radius: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--toast-border);
+    box-shadow: 0 8px 24px var(--toast-shadow);
     font-size: 12px;
     transition: bottom 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
     z-index: 9999;
@@ -428,9 +461,144 @@
 
   .toast.visible { bottom: 20px; }
   .toast-icon { font-size: 14px; }
+
+  /* ===== TAB BAR ===== */
+  .tab-bar {
+    width: 100%;
+    height: 36px;
+    background: var(--bg-toolbar);
+    display: flex;
+    align-items: center;
+    -webkit-app-region: drag;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .tab-bar-tabs {
+    flex: 1;
+    display: flex;
+    align-items: flex-end;
+    height: 100%;
+    padding: 0 8px;
+    gap: 2px;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  .window-controls {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 6px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  .win-btn {
+    width: 32px;
+    height: 28px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+
+  .win-btn:hover { background: var(--bg-btn-hover); color: var(--text-primary); }
+  .win-close:hover { background: #e81123; color: #fff; }
+
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 220px;
+    padding: 0 8px 0 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    cursor: pointer;
+    transition: all 0.15s;
+    -webkit-app-region: no-drag;
+  }
+
+  .tab:hover {
+    background: var(--bg-btn-hover);
+  }
+
+  .tab.active {
+    background: var(--bg-primary);
+    border-color: var(--border-subtle);
+  }
+
+  .tab-favicon {
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .tab-title {
+    flex: 1;
+    font-size: 11.5px;
+    color: var(--text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .tab.active .tab-title {
+    color: var(--text-primary);
+  }
+
+  .tab-close {
+    width: 18px;
+    height: 18px;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: all 0.1s;
+    padding: 0;
+    line-height: 1;
+  }
+
+  .tab:hover .tab-close,
+  .tab.active .tab-close { opacity: 1; }
+  .tab-close:hover { background: var(--close-hover); color: #fff; }
 </style>
 </head>
 <body>
+
+<!-- Tab Bar + Window Controls -->
+<div class="tab-bar" id="tab-bar">
+  <div class="tab-bar-tabs" id="tab-bar-tabs"></div>
+  <div class="window-controls">
+    <button class="win-btn" id="btn-minimize" title="Minimizar">
+      <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+    <button class="win-btn" id="btn-maximize" title="Maximizar">
+      <svg width="12" height="12" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+    </button>
+    <button class="win-btn win-close" id="btn-close" title="Fechar">
+      <svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</div>
 
 <div class="toolbar">
   <!-- Barra de carregamento -->
@@ -454,15 +622,12 @@
     <div class="status-dot" id="status-dot"></div>
   </div>
 
-  <!-- Acoes -->
+  <!-- Downloads -->
   <div class="actions-group">
     <button class="downloads-btn" id="btn-downloads">
       &#8595; Downloads
       <span class="downloads-badge" id="downloads-badge">0</span>
     </button>
-    <button class="action-btn" id="btn-minimize" title="Minimizar">&#8722;</button>
-    <button class="action-btn" id="btn-maximize" title="Maximizar">&#9633;</button>
-    <button class="action-btn close" id="btn-close" title="Fechar">&#215;</button>
   </div>
 </div>
 
@@ -492,6 +657,85 @@
 <script>
   const api = window.toolbarAPI;
   const downloads = new Map();
+
+  // ===== TEMA =====
+  api.onThemeChanged((tema) => {
+    document.documentElement.classList.toggle('dark', tema === 'dark');
+  });
+
+  // ===== ABAS =====
+  const tabBar = document.getElementById('tab-bar-tabs');
+  let activeTabIdLocal = null;
+
+  function createTabElement(data) {
+    const tab = document.createElement('div');
+    tab.className = 'tab' + (data.isActive ? ' active' : '');
+    tab.setAttribute('data-tab-id', data.tabId);
+
+    const fav = document.createElement('img');
+    fav.className = 'tab-favicon';
+    fav.src = data.favicon || '';
+    fav.onerror = function() { this.style.display = 'none'; };
+    if (!data.favicon) fav.style.display = 'none';
+
+    const title = document.createElement('span');
+    title.className = 'tab-title';
+    title.textContent = data.title || 'Carregando...';
+
+    const close = document.createElement('button');
+    close.className = 'tab-close';
+    close.innerHTML = '&#215;';
+    close.addEventListener('click', function(e) {
+      e.stopPropagation();
+      api.closeTab(data.tabId);
+    });
+
+    tab.appendChild(fav);
+    tab.appendChild(title);
+    tab.appendChild(close);
+
+    tab.addEventListener('click', function() {
+      api.switchTab(data.tabId);
+    });
+
+    return tab;
+  }
+
+  api.onTabAdded(function(data) {
+    tabBar.appendChild(createTabElement(data));
+    if (data.isActive) setActiveTabLocal(data.tabId);
+  });
+
+  api.onTabRemoved(function(tabId) {
+    const el = tabBar.querySelector('[data-tab-id="' + tabId + '"]');
+    if (el) el.remove();
+  });
+
+  api.onTabActivated(function(data) {
+    setActiveTabLocal(data.tabId);
+  });
+
+  api.onTabUpdated(function(data) {
+    const el = tabBar.querySelector('[data-tab-id="' + data.tabId + '"]');
+    if (!el) return;
+    if (data.title) {
+      el.querySelector('.tab-title').textContent = data.title;
+    }
+    if (data.favicon) {
+      var fav = el.querySelector('.tab-favicon');
+      fav.src = data.favicon;
+      fav.style.display = '';
+      fav.onerror = function() { this.style.display = 'none'; };
+    }
+  });
+
+  function setActiveTabLocal(tabId) {
+    activeTabIdLocal = tabId;
+    var allTabs = tabBar.querySelectorAll('.tab');
+    for (var i = 0; i < allTabs.length; i++) {
+      allTabs[i].classList.toggle('active', allTabs[i].getAttribute('data-tab-id') === tabId);
+    }
+  }
 
   // ===== ELEMENTOS =====
   const urlInput       = document.getElementById('url-input');

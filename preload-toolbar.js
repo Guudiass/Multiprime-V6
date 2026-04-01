@@ -43,7 +43,28 @@ contextBridge.exposeInMainWorld('toolbarAPI', {
     },
 
     // Exportação de sessão
-    exportSession: (storageData) => ipcRenderer.send('initiate-full-session-export', storageData)
+    exportSession: (storageData) => ipcRenderer.send('initiate-full-session-export', storageData),
+
+    // Tema
+    onThemeChanged: (callback) => {
+        ipcRenderer.on('theme-changed', (event, tema) => callback(tema));
+    },
+
+    // Abas
+    switchTab: (tabId) => ipcRenderer.send('switch-tab', tabId),
+    closeTab:  (tabId) => ipcRenderer.send('close-tab', tabId),
+    onTabAdded: (callback) => {
+        ipcRenderer.on('tab-added', (event, data) => callback(data));
+    },
+    onTabRemoved: (callback) => {
+        ipcRenderer.on('tab-removed', (event, tabId) => callback(tabId));
+    },
+    onTabActivated: (callback) => {
+        ipcRenderer.on('tab-activated', (event, data) => callback(data));
+    },
+    onTabUpdated: (callback) => {
+        ipcRenderer.on('tab-updated', (event, data) => callback(data));
+    }
 });
 
 console.log('[PRELOAD-TOOLBAR] API da toolbar carregada.');

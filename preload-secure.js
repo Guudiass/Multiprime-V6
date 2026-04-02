@@ -220,10 +220,12 @@ const { ipcRenderer, webFrame } = require('electron');
                     }
 
                     // 14. Turnstile mock → CapSolver
-                    // Captura sitekey e callback, sinaliza main process via título,
-                    // main process resolve via CapSolver e injeta o token
+                    // Mock intercepta turnstile.render() para capturar sitekey
+                    // Se o script real do Cloudflare carregar depois, ele sobrescreve o mock
+                    // (Challenge pages carregam o script real, pages normais usam o mock)
                     window.__mpTurnstileCallback = null;
-                    var tsMock = {
+                    window.__mpTurnstileMock = true;
+                    window.turnstile = {
                         render: function(el, opts) {
                             var sitekey = '';
                             if (opts) {
@@ -239,7 +241,6 @@ const { ipcRenderer, webFrame } = require('electron');
                                 } catch(e) {}
                             }
                             if (sitekey) {
-                                // Sinalizar main process
                                 setTimeout(function() {
                                     document.title = 'MP_TURNSTILE:' + sitekey;
                                 }, 500);
@@ -256,11 +257,6 @@ const { ipcRenderer, webFrame } = require('electron');
                             }
                         }
                     };
-                    Object.defineProperty(window, 'turnstile', {
-                        get: function() { return tsMock; },
-                        set: function() {},
-                        configurable: false
-                    });
 
                 } catch (e) {
                     console.error('[ANTI-DETECT] Erro:', e);

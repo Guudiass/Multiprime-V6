@@ -580,6 +580,21 @@
   .tab:hover .tab-close,
   .tab.active .tab-close { opacity: 1; }
   .tab-close:hover { background: var(--close-hover); color: #fff; }
+
+  /* Loading spinner na aba (substitui favicon durante carregamento) */
+  .tab-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border-subtle);
+    border-top-color: #3b82f6;
+    border-radius: 50%;
+    flex-shrink: 0;
+    animation: spin 0.7s linear infinite;
+    display: none;
+  }
+
+  .tab.loading .tab-spinner { display: block; }
+  .tab.loading .tab-favicon { display: none; }
 </style>
 </head>
 <body>
@@ -669,8 +684,11 @@
 
   function createTabElement(data) {
     const tab = document.createElement('div');
-    tab.className = 'tab' + (data.isActive ? ' active' : '');
+    tab.className = 'tab loading' + (data.isActive ? ' active' : '');
     tab.setAttribute('data-tab-id', data.tabId);
+
+    const spinner = document.createElement('div');
+    spinner.className = 'tab-spinner';
 
     const fav = document.createElement('img');
     fav.className = 'tab-favicon';
@@ -690,6 +708,7 @@
       api.closeTab(data.tabId);
     });
 
+    tab.appendChild(spinner);
     tab.appendChild(fav);
     tab.appendChild(title);
     tab.appendChild(close);
@@ -727,6 +746,11 @@
       fav.style.display = '';
       fav.onerror = function() { this.style.display = 'none'; };
     }
+  });
+
+  api.onTabLoading(function(data) {
+    const el = tabBar.querySelector('[data-tab-id="' + data.tabId + '"]');
+    if (el) el.classList.toggle('loading', data.isLoading);
   });
 
   function setActiveTabLocal(tabId) {

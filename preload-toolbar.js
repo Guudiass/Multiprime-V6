@@ -64,6 +64,9 @@ contextBridge.exposeInMainWorld('toolbarAPI', {
     },
     onTabUpdated: (callback) => {
         ipcRenderer.on('tab-updated', (event, data) => callback(data));
+    },
+    onTabLoading: (callback) => {
+        ipcRenderer.on('tab-loading', (event, data) => callback(data));
     }
 });
 

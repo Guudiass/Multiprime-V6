@@ -53,6 +53,7 @@ jobs:
 
   build-mac:
     runs-on: macos-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -72,9 +73,62 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build and Publish
+      - name: Build Mac (signed)
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: npx electron-builder --mac --publish always
+
+      - name: Notarize DMGs
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "=== DMGs encontrados ==="
+          ls -la dist/*.dmg 2>/dev/null || true
+
+          for DMG in dist/*.dmg; do
+            if [ -f "$DMG" ]; then
+              echo ""
+              echo "=== Notarizando: $DMG ==="
+              xcrun notarytool submit "$DMG" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" \
+                --wait --timeout 30m 2>&1
+
+              if [ $? -eq 0 ]; then
+                echo "✅ Notarizado! Stapling..."
+                xcrun stapler staple "$DMG"
+                echo "✅ Stapled: $DMG"
+              else
+                echo "⚠️ Notarização falhou para $DMG (continuando...)"
+              fi
+            fi
+          done
+
+      - name: Re-upload notarized DMGs to release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "=== Re-uploading DMGs notarizados para release $TAG ==="
+
+          for DMG in dist/*.dmg; do
+            if [ -f "$DMG" ]; then
+              FILENAME=$(basename "$DMG")
+              echo "Uploading: $FILENAME"
+
+              # Deletar asset antigo (nao notarizado)
+              ASSET_ID=$(gh release view "$TAG" --json assets -q ".assets[] | select(.name==\"$FILENAME\") | .id" 2>/dev/null || true)
+              if [ -n "$ASSET_ID" ]; then
+                gh api -X DELETE "/repos/${{ github.repository }}/releases/assets/$ASSET_ID" 2>/dev/null || true
+              fi
+
+              # Upload do notarizado
+              gh release upload "$TAG" "$DMG" --clobber 2>/dev/null || true
+              echo "✅ $FILENAME uploaded"
+            fi
+          done

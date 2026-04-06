@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(find 'C:\\\\Designer Prime\\\\Multiprime-V6' -type f \\\\\\(-name *.p12 -o -name *.cer -o -name *.mobileprovision \\\\\\))"
     ]
   }
 }

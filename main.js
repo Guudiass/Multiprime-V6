@@ -27,6 +27,18 @@ function startApp() {
     app.commandLine.appendSwitch('disable-gpu-sandbox');
     app.commandLine.appendSwitch('disable-software-rasterizer');
 
+    // Habilitar features modernas do Chrome (necessario para sites como CapCut, Canva, etc.)
+    app.commandLine.appendSwitch('enable-features',
+        'WebCodecs,WebGPU,SharedArrayBuffer,MediaSessionService,VaapiVideoDecoder,CanvasOopRasterization'
+    );
+    // Habilitar codecs proprietarios (H.264, AAC, etc.)
+    app.commandLine.appendSwitch('enable-accelerated-video-decode');
+    app.commandLine.appendSwitch('enable-accelerated-video');
+    // Permitir autoplay sem interacao do usuario
+    app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+    // Ignorar erros de certificado em alguns proxies
+    app.commandLine.appendSwitch('ignore-certificate-errors-spki-list');
+
     app.whenReady().then(async () => {
         await limparParticoesAntigas();
 

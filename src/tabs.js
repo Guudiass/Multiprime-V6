@@ -416,6 +416,14 @@ function createTab(perfil, isolatedSession, storageData) {
     sendToLovable('mp-tab-opened', { tabId, perfilId: perfil.id, url: perfil.link, title: tabEntry.title });
 
     activateTab(tabId);
+
+    // Restaurar e focar a janela para o usuario ver que a ferramenta abriu
+    if (state.browserWindow && !state.browserWindow.isDestroyed()) {
+        if (state.browserWindow.isMinimized()) state.browserWindow.restore();
+        state.browserWindow.show();
+        state.browserWindow.focus();
+    }
+
     return tabEntry;
 }
 

@@ -128,6 +128,16 @@ _mp_contextBridge.exposeInMainWorld('multiprime', {
     }
   },
 
+  // Versao do app (para integrity check buscar a tag certa no GitHub)
+  getVersion: function() {
+    try {
+      var pkg = require(_mp_path.join(__dirname, 'package.json'));
+      return pkg.version || null;
+    } catch (e) {
+      return null;
+    }
+  },
+
   // Verificação de integridade
   getIntegrity: function(nonce) {
     if (!nonce || typeof nonce !== 'string') return null;

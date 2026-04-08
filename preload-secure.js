@@ -1,10 +1,11 @@
 /* eslint-disable no-undef */
-// preload-secure.js — VERSÃO ANTI-DETECÇÃO AVANÇADA v2
-// Responsabilidades: polyfills, anti-detecção completa, auto-login, injeção de sessão.
+// preload-secure.js — VERSÃO SIMPLIFICADA
+// O Electron é Chromium real. Quanto menos a gente mocka, menos chance de detecção.
+// Responsabilidades: polyfill Set, webdriver=false, Turnstile mock, auto-login, session injection.
 
 const { ipcRenderer, webFrame } = require('electron');
 
-// ===== POLYFILL SET METHODS =====
+// ===== POLYFILL SET METHODS (Node < 22 compat) =====
 (() => {
     try {
         webFrame.executeJavaScript(`
@@ -38,191 +39,21 @@ const { ipcRenderer, webFrame } = require('electron');
     } catch (e) {}
 })();
 
-// ===== ANTI-DETECÇÃO AVANÇADA (MAIN WORLD) =====
+// ===== MÍNIMO NECESSÁRIO (MAIN WORLD) =====
+// Apenas navigator.webdriver = false e Turnstile mock para CapSolver.
+// Tudo o resto fica como o Chromium nativo do Electron.
 (() => {
     try {
         webFrame.executeJavaScript(`
             (function() {
                 try {
-                    // 1. webdriver = false
+                    // 1. webdriver = false (única marca real de automação que o Chrome expõe)
                     Object.defineProperty(navigator, 'webdriver', { get: () => false });
 
-                    // 2. Plugins Chrome-like
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => {
-                            var p = [
-                                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
-                                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '', length: 1 },
-                                { name: 'Native Client', filename: 'internal-nacl-plugin', description: '', length: 1 },
-                            ];
-                            p.namedItem = function(name) { return this.find(function(x) { return x.name === name; }) || null; };
-                            p.item = function(i) { return this[i] || null; };
-                            p.refresh = function() {};
-                            return p;
-                        },
-                    });
-
-                    // 3. Permissions query
-                    var origQuery = navigator.permissions.query.bind(navigator.permissions);
-                    navigator.permissions.query = function(params) {
-                        if (params.name === 'notifications') {
-                            return Promise.resolve({ state: Notification.permission });
-                        }
-                        return origQuery(params);
-                    };
-
-                    // 4. chrome.runtime / csi / loadTimes / app
-                    if (!window.chrome) window.chrome = {};
-                    if (!window.chrome.runtime) {
-                        window.chrome.runtime = {
-                            connect: function() { return { onMessage: { addListener: function() {} }, postMessage: function() {}, onDisconnect: { addListener: function() {} } }; },
-                            sendMessage: function(msg, cb) { if (cb) cb(); },
-                            id: undefined,
-                            getManifest: function() { return {}; },
-                            getURL: function() { return ''; },
-                            onConnect: { addListener: function() {} },
-                            onMessage: { addListener: function() {} }
-                        };
-                    }
-                    if (!window.chrome.csi) window.chrome.csi = function() {
-                        return { startE: Date.now(), onloadT: Date.now(), pageT: Math.random() * 1000, tran: 15 };
-                    };
-                    if (!window.chrome.loadTimes) window.chrome.loadTimes = function() {
-                        return {
-                            commitLoadTime: Date.now() / 1000, connectionInfo: 'h2',
-                            finishDocumentLoadTime: Date.now() / 1000, finishLoadTime: Date.now() / 1000,
-                            firstPaintAfterLoadTime: 0, firstPaintTime: Date.now() / 1000,
-                            navigationType: 'Other', npnNegotiatedProtocol: 'h2',
-                            requestTime: Date.now() / 1000, startLoadTime: Date.now() / 1000,
-                            wasAlternateProtocolAvailable: false, wasFetchedViaSpdy: true, wasNpnNegotiated: true
-                        };
-                    };
-                    if (!window.chrome.app) {
-                        window.chrome.app = {
-                            isInstalled: false,
-                            InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-                            RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-                            getDetails: function() { return null; }, getIsInstalled: function() { return false; }
-                        };
-                    }
-
-                    // 5. navigator.userAgentData
-                    var uaVersion = (navigator.userAgent.match(/Chrome\\/([\\d]+)/) || ['', '146'])[1];
-                    Object.defineProperty(navigator, 'userAgentData', {
-                        get: function() {
-                            return {
-                                brands: [
-                                    { brand: 'Google Chrome', version: uaVersion },
-                                    { brand: 'Chromium', version: uaVersion },
-                                    { brand: 'Not_A Brand', version: '24' }
-                                ],
-                                mobile: false,
-                                platform: navigator.platform.includes('Mac') ? 'macOS' : 'Windows',
-                                getHighEntropyValues: function() {
-                                    return Promise.resolve({
-                                        brands: this.brands, mobile: false, bitness: '64',
-                                        platform: this.platform, platformVersion: '15.0.0',
-                                        architecture: 'x86', model: '',
-                                        uaFullVersion: uaVersion + '.0.0.0',
-                                        fullVersionList: [
-                                            { brand: 'Google Chrome', version: uaVersion + '.0.0.0' },
-                                            { brand: 'Chromium', version: uaVersion + '.0.0.0' },
-                                            { brand: 'Not_A Brand', version: '24.0.0.0' }
-                                        ]
-                                    });
-                                },
-                                toJSON: function() { return { brands: this.brands, mobile: false, platform: this.platform }; }
-                            };
-                        }, configurable: true
-                    });
-
-                    // 6. Limpar User Agent
-                    var cleanUA = navigator.userAgent.replace(/Electron\\/[\\d.]+ /, '').replace(/multiprime-v6\\/[\\d.]+ /, '');
-                    Object.defineProperty(navigator, 'userAgent', { get: function() { return cleanUA; } });
-                    Object.defineProperty(navigator, 'appVersion', { get: function() { return cleanUA.replace('Mozilla/', ''); } });
-
-                    // 7. Languages
-                    Object.defineProperty(navigator, 'languages', { get: function() { return ['pt-BR', 'pt', 'en-US', 'en']; }, configurable: true });
-
-                    // 8. Connection
-                    if (!navigator.connection) {
-                        Object.defineProperty(navigator, 'connection', {
-                            get: function() { return { effectiveType: '4g', rtt: 50, downlink: 10, saveData: false, onchange: null, addEventListener: function(){}, removeEventListener: function(){} }; }
-                        });
-                    }
-
-                    // 9. Remover sinais de automação
-                    ['__nightmare','_phantom','callPhantom','__selenium_unwrapped','__webdriver_evaluate',
-                     '__driver_evaluate','__webdriver_unwrapped','__fxdriver_evaluate','__fxdriver_unwrapped',
-                     'domAutomation','domAutomationController','_Selenium_IDE_Recorder'
-                    ].forEach(function(p) { try { delete window[p]; } catch(e){} try { delete document[p]; } catch(e){} });
-
-                    // 10. Canvas fingerprint noise
-                    (function() {
-                        var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-                        var origToBlob = HTMLCanvasElement.prototype.toBlob;
-                        var origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-                        function addNoise(imgData) {
-                            var d = imgData.data;
-                            for (var i = 0; i < d.length; i += 4) {
-                                if (Math.random() < 0.1) d[i] = d[i] ^ 1;
-                            }
-                            return imgData;
-                        }
-                        HTMLCanvasElement.prototype.toDataURL = function() {
-                            try {
-                                var ctx = this.getContext('2d');
-                                if (ctx && this.width > 16 && this.height > 16) {
-                                    var img = origGetImageData.call(ctx, 0, 0, this.width, this.height);
-                                    addNoise(img); ctx.putImageData(img, 0, 0);
-                                }
-                            } catch(e) {}
-                            return origToDataURL.apply(this, arguments);
-                        };
-                        HTMLCanvasElement.prototype.toBlob = function() {
-                            try {
-                                var ctx = this.getContext('2d');
-                                if (ctx && this.width > 16 && this.height > 16) {
-                                    var img = origGetImageData.call(ctx, 0, 0, this.width, this.height);
-                                    addNoise(img); ctx.putImageData(img, 0, 0);
-                                }
-                            } catch(e) {}
-                            return origToBlob.apply(this, arguments);
-                        };
-                    })();
-
-                    // 11. WebGL Vendor/Renderer spoofing
-                    (function() {
-                        var origGetParam = WebGLRenderingContext.prototype.getParameter;
-                        var VENDOR = 0x9245, RENDERER = 0x9246;
-                        function spoof(orig) {
-                            return function(p) {
-                                if (p === VENDOR) return 'Google Inc. (NVIDIA)';
-                                if (p === RENDERER) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-                                return orig.call(this, p);
-                            };
-                        }
-                        WebGLRenderingContext.prototype.getParameter = spoof(origGetParam);
-                        try { WebGL2RenderingContext.prototype.getParameter = spoof(WebGL2RenderingContext.prototype.getParameter); } catch(e) {}
-                    })();
-
-                    // 12. Notification
-                    if (!window.Notification) {
-                        window.Notification = function() {};
-                        window.Notification.permission = 'default';
-                        window.Notification.requestPermission = function() { return Promise.resolve('default'); };
-                    }
-
-                    // 13. Screen consistency
-                    if (screen.availWidth === 0) {
-                        Object.defineProperty(screen, 'availWidth', { get: function() { return screen.width; } });
-                        Object.defineProperty(screen, 'availHeight', { get: function() { return screen.height - 40; } });
-                    }
-
-                    // 14. Turnstile mock → CapSolver
-                    // Mock intercepta turnstile.render() para capturar sitekey
-                    // Se o script real do Cloudflare carregar depois, ele sobrescreve o mock
-                    // (Challenge pages carregam o script real, pages normais usam o mock)
+                    // 2. Turnstile mock → CapSolver
+                    // Intercepta turnstile.render() para capturar sitekey e notificar o main process.
+                    // Atribuição simples (sem defineProperty) — se o script real do Cloudflare
+                    // carregar depois (em Challenge pages), ele sobrescreve o mock naturalmente.
                     window.__mpTurnstileCallback = null;
                     window.__mpTurnstileMock = true;
                     window.turnstile = {
@@ -257,15 +88,10 @@ const { ipcRenderer, webFrame } = require('electron');
                             }
                         }
                     };
-
-                } catch (e) {
-                    console.error('[ANTI-DETECT] Erro:', e);
-                }
+                } catch (e) {}
             })();
         `, true);
-    } catch (e) {
-        console.error('[ANTI-DETECT] Erro fatal:', e);
-    }
+    } catch (e) {}
 })();
 
 // ===== AUTO-LOGIN =====

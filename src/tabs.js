@@ -281,10 +281,45 @@ function createTab(perfil, isolatedSession, storageData) {
     });
 
     // Viewport + site fixes
+    const reloaded403Urls = new Set();
     view.webContents.on('did-finish-load', () => {
         setTimeout(forceViewportRecalc, 300);
         setTimeout(forceViewportRecalc, 1000);
         injectSiteFixes(view.webContents);
+
+        // Detectar pagina 200 OK mas com conteudo de erro 403/bloqueio
+        // (alguns sites retornam HTML com erro em vez de HTTP status)
+        setTimeout(async () => {
+            if (view.webContents.isDestroyed()) return;
+            try {
+                const check = await view.webContents.executeJavaScript(`
+                    (function() {
+                        var title = (document.title || '').toLowerCase();
+                        var body = (document.body && document.body.innerText || '').substring(0, 500).toLowerCase();
+                        var url = window.location.href;
+                        // Pagina muito curta com "403" visivel
+                        var isBlocked = (
+                            (title.indexOf('403') !== -1) ||
+                            (title.indexOf('access denied') !== -1) ||
+                            (body.trim() === '403') ||
+                            (body.length < 100 && body.indexOf('403') !== -1)
+                        );
+                        return { blocked: isBlocked, url: url, title: title, bodyLen: body.length };
+                    })();
+                `);
+
+                if (check && check.blocked) {
+                    const urlKey = check.url.split('?')[0];
+                    if (!reloaded403Urls.has(urlKey)) {
+                        reloaded403Urls.add(urlKey);
+                        console.warn(`[PAGE 403] Detectado via DOM: ${check.url.substring(0, 100)} | title="${check.title}"`);
+                        setTimeout(() => {
+                            if (!view.webContents.isDestroyed()) view.webContents.reload();
+                        }, 1200);
+                    }
+                }
+            } catch {}
+        }, 1500);
     });
     view.webContents.on('did-navigate', () => {
         setTimeout(() => injectSiteFixes(view.webContents), 500);
@@ -294,6 +329,9 @@ function createTab(perfil, isolatedSession, storageData) {
         if (errorCode === -3) return;
         if (isMainFrame && state.activeTabId === tabId) sendToToolbar('page-loading', false);
     });
+
+    // Auto-retry em 403/503 e headers sec-fetch sao tratados em ipc-handlers.js
+    // via isolatedSession.webRequest.onBeforeSendHeaders + onHeadersReceived
 
     // Crash recovery
     view.webContents.on('render-process-gone', () => {

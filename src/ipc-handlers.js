@@ -293,10 +293,6 @@ async function handleAbrirNavegador(event, rawPerfil) {
         isolatedSession.setPermissionRequestHandler((wc, permission, callback) => callback(true));
         isolatedSession.setPermissionCheckHandler(() => true);
 
-        // Turnstile: NÃO bloquear mais o script
-        // O preload-secure.js detecta se é Challenge page e decide se mocka ou não
-        // Se for Challenge page: script real carrega, usuario resolve manualmente
-        // Se for página normal: mock intercepta antes do script real executar
 
         // Criar janela e aba
         if (!state.browserWindow || state.browserWindow.isDestroyed()) {
@@ -336,9 +332,45 @@ async function handleAbrirNavegador(event, rawPerfil) {
             }
         });
 
+        // Auto-reload em 403/503 no main frame (max 1 retry por URL)
+        // (sites como ChatGPT, Freepik etc rejeitam a primeira requisicao e refresh resolve)
+        const reloadedUrls = new Set();
+        isolatedSession.webRequest.onHeadersReceived((details, callback) => {
+            if (details.resourceType === 'mainFrame') {
+                const statusCode = details.statusCode;
+                // URL base sem params de verificacao (para agrupar retries)
+                const urlKey = details.url.split('?')[0];
+
+                if ((statusCode === 403 || statusCode === 503) && !reloadedUrls.has(urlKey)) {
+                    reloadedUrls.add(urlKey);
+                    console.warn(`[HTTP ${statusCode}] Auto-reload em: ${details.url.substring(0, 100)}`);
+                    setTimeout(() => {
+                        try {
+                            for (const [, tab] of state.tabs) {
+                                if (tab.view.webContents.session === isolatedSession) {
+                                    if (!tab.view.webContents.isDestroyed()) {
+                                        tab.view.webContents.reload();
+                                    }
+                                    break;
+                                }
+                            }
+                        } catch {}
+                    }, 1200);
+                } else if (statusCode >= 200 && statusCode < 400) {
+                    // Sucesso — remover da lista de URLs com retry feito
+                    // (assim se o usuario voltar para a mesma URL e der 403 de novo, faz retry)
+                    reloadedUrls.delete(urlKey);
+                }
+            }
+            callback({ responseHeaders: details.responseHeaders });
+        });
+
         // Load URL
-        try { await view.webContents.loadURL(perfil.link); }
-        catch (err) { console.warn(`[NAV] Erro: ${err.code || err.message}`); }
+        try {
+            await view.webContents.loadURL(perfil.link);
+        } catch (err) {
+            console.warn(`[NAV] Erro: ${err.code || err.message}`);
+        }
 
     } catch (err) {
         console.error('--- [ERRO FATAL] ---', err);

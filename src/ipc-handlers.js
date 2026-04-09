@@ -332,38 +332,8 @@ async function handleAbrirNavegador(event, rawPerfil) {
             }
         });
 
-        // Auto-reload em 403/503 no main frame (max 1 retry por URL)
-        // (sites como ChatGPT, Freepik etc rejeitam a primeira requisicao e refresh resolve)
-        const reloadedUrls = new Set();
-        isolatedSession.webRequest.onHeadersReceived((details, callback) => {
-            if (details.resourceType === 'mainFrame') {
-                const statusCode = details.statusCode;
-                // URL base sem params de verificacao (para agrupar retries)
-                const urlKey = details.url.split('?')[0];
-
-                if ((statusCode === 403 || statusCode === 503) && !reloadedUrls.has(urlKey)) {
-                    reloadedUrls.add(urlKey);
-                    console.warn(`[HTTP ${statusCode}] Auto-reload em: ${details.url.substring(0, 100)}`);
-                    setTimeout(() => {
-                        try {
-                            for (const [, tab] of state.tabs) {
-                                if (tab.view.webContents.session === isolatedSession) {
-                                    if (!tab.view.webContents.isDestroyed()) {
-                                        tab.view.webContents.reload();
-                                    }
-                                    break;
-                                }
-                            }
-                        } catch {}
-                    }, 1200);
-                } else if (statusCode >= 200 && statusCode < 400) {
-                    // Sucesso — remover da lista de URLs com retry feito
-                    // (assim se o usuario voltar para a mesma URL e der 403 de novo, faz retry)
-                    reloadedUrls.delete(urlKey);
-                }
-            }
-            callback({ responseHeaders: details.responseHeaders });
-        });
+        // Auto-reload de 403 e tratado em tabs.js (checkAndReload403)
+        // Funciona para TODOS os tipos: HTTP 403, body "403", Access Denied, Cloudflare stuck, etc.
 
         // Load URL
         try {

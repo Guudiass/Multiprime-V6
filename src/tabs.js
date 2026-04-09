@@ -146,7 +146,7 @@ function createTab(perfil, isolatedSession, storageData) {
     if (perfil.id) state.perfilIdToTab.set(perfil.id, tabId);
 
     const forceViewportRecalc = () => {
-        if (!view.webContents.isDestroyed()) {
+        if (view.webContents && !view.webContents.isDestroyed()) {
             view.webContents.executeJavaScript('window.dispatchEvent(new Event("resize"))').catch(() => {});
         }
     };
@@ -280,49 +280,99 @@ function createTab(perfil, isolatedSession, storageData) {
         if (isMainFrame && state.activeTabId === tabId) sendToToolbar('page-loading', true);
     });
 
-    // Viewport + site fixes
-    const reloaded403Urls = new Set();
+    // Viewport + site fixes + AUTO-RELOAD 403 UNIFICADO
+    // Unica solucao: detectar pagina de erro apos CADA navegacao e recarregar automaticamente.
+    // Funciona para TODOS os tipos de 403: HTTP status, HTML body, redirect bloqueado, etc.
+    const autoReloadAttempts = new Map(); // urlBase → tentativas
+    const MAX_AUTO_RELOAD = 2; // max 2 reloads por URL
+
+    async function checkAndReload403() {
+        if (!view.webContents || view.webContents.isDestroyed()) return;
+        try {
+            const check = await view.webContents.executeJavaScript(`
+                (function() {
+                    var t = (document.title || '').toLowerCase();
+                    var b = (document.body ? document.body.innerText : '').substring(0, 1000);
+                    var bl = b.toLowerCase();
+                    var url = window.location.href;
+
+                    var blocked = false;
+                    var reason = '';
+
+                    // 1. Titulo com erro
+                    if (t.indexOf('403') !== -1 || t === 'forbidden' || t.indexOf('access denied') !== -1 || t.indexOf('error') !== -1 && t.indexOf('403') !== -1) {
+                        blocked = true; reason = 'title:' + t;
+                    }
+
+                    // 2. Body so tem "403" (ChatGPT retorna pagina com so "403" no body)
+                    if (!blocked && b.trim() === '403') {
+                        blocked = true; reason = 'body-only-403';
+                    }
+
+                    // 3. Body curto (< 200 chars) com indicadores de bloqueio
+                    if (!blocked && b.length < 200) {
+                        if (bl.indexOf('403') !== -1 || bl.indexOf('forbidden') !== -1 || bl.indexOf('access denied') !== -1 || bl.indexOf('blocked') !== -1) {
+                            blocked = true; reason = 'short-body-blocked';
+                        }
+                    }
+
+                    // 4. Pagina do Freepik com "ERROR" e "Access denied"
+                    if (!blocked && bl.indexOf('access denied') !== -1 && bl.indexOf('you don') !== -1 && bl.indexOf('permission') !== -1) {
+                        blocked = true; reason = 'access-denied-page';
+                    }
+
+                    // 5. URL com bm-verify (bot management redirect do Freepik)
+                    if (!blocked && url.indexOf('bm-verify=') !== -1 && bl.indexOf('403') !== -1) {
+                        blocked = true; reason = 'bm-verify-403';
+                    }
+
+                    // 6. Pagina Cloudflare Challenge que ficou presa
+                    if (!blocked && (bl.indexOf('just a moment') !== -1 || bl.indexOf('verificação de segurança') !== -1 || bl.indexOf('checking') !== -1 && bl.indexOf('browser') !== -1) && b.length < 500) {
+                        blocked = true; reason = 'cloudflare-stuck';
+                    }
+
+                    return { blocked: blocked, reason: reason, url: url, title: t.substring(0, 50), bodyLen: b.length };
+                })();
+            `);
+
+            if (check && check.blocked) {
+                const urlKey = check.url.split('?')[0].split('#')[0];
+                const attempts = autoReloadAttempts.get(urlKey) || 0;
+
+                if (attempts < MAX_AUTO_RELOAD) {
+                    autoReloadAttempts.set(urlKey, attempts + 1);
+                    console.warn('[AUTO-RELOAD] ' + (attempts + 1) + '/' + MAX_AUTO_RELOAD + ' | ' + check.reason + ' | ' + check.url.substring(0, 80));
+                    setTimeout(() => {
+                        if (!view.webContents.isDestroyed()) view.webContents.reload();
+                    }, 1000 + (attempts * 500));
+                } else {
+                    console.warn('[AUTO-RELOAD] Max tentativas atingido para: ' + urlKey.substring(0, 60));
+                }
+            } else if (check) {
+                // Pagina carregou OK — resetar tentativas para esta URL
+                const urlKey = check.url.split('?')[0].split('#')[0];
+                autoReloadAttempts.delete(urlKey);
+            }
+        } catch {}
+    }
+
     view.webContents.on('did-finish-load', () => {
         setTimeout(forceViewportRecalc, 300);
         setTimeout(forceViewportRecalc, 1000);
         injectSiteFixes(view.webContents);
-
-        // Detectar pagina 200 OK mas com conteudo de erro 403/bloqueio
-        // (alguns sites retornam HTML com erro em vez de HTTP status)
-        setTimeout(async () => {
-            if (view.webContents.isDestroyed()) return;
-            try {
-                const check = await view.webContents.executeJavaScript(`
-                    (function() {
-                        var title = (document.title || '').toLowerCase();
-                        var body = (document.body && document.body.innerText || '').substring(0, 500).toLowerCase();
-                        var url = window.location.href;
-                        // Pagina muito curta com "403" visivel
-                        var isBlocked = (
-                            (title.indexOf('403') !== -1) ||
-                            (title.indexOf('access denied') !== -1) ||
-                            (body.trim() === '403') ||
-                            (body.length < 100 && body.indexOf('403') !== -1)
-                        );
-                        return { blocked: isBlocked, url: url, title: title, bodyLen: body.length };
-                    })();
-                `);
-
-                if (check && check.blocked) {
-                    const urlKey = check.url.split('?')[0];
-                    if (!reloaded403Urls.has(urlKey)) {
-                        reloaded403Urls.add(urlKey);
-                        console.warn(`[PAGE 403] Detectado via DOM: ${check.url.substring(0, 100)} | title="${check.title}"`);
-                        setTimeout(() => {
-                            if (!view.webContents.isDestroyed()) view.webContents.reload();
-                        }, 1200);
-                    }
-                }
-            } catch {}
-        }, 1500);
+        // Checar 403 apos 1s (tempo pro DOM renderizar)
+        setTimeout(checkAndReload403, 1000);
     });
+
     view.webContents.on('did-navigate', () => {
         setTimeout(() => injectSiteFixes(view.webContents), 500);
+        // Tambem checar apos navegacao SPA
+        setTimeout(checkAndReload403, 1500);
+    });
+
+    view.webContents.on('did-navigate-in-page', () => {
+        // Checar mesmo em navegacao in-page (SPA routing)
+        setTimeout(checkAndReload403, 1500);
     });
 
     view.webContents.on('did-fail-load', (event, errorCode, desc, url, isMainFrame) => {

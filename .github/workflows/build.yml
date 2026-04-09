@@ -158,26 +158,54 @@ jobs:
           npm install
           npm install electron@28 --save-dev --force
 
-      - name: Build Mac Legacy (unsigned zip)
+      - name: Build Mac Legacy (signed DMG, x64 + arm64)
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: |
-          # Buildar como zip (sem notarizacao, sem signing)
-          npx electron-builder --mac zip --publish never
+          npx electron-builder --mac dmg --x64 --publish never
+          npx electron-builder --mac dmg --arm64 --publish never
 
-      - name: Rename and upload legacy build
+      - name: Notarize legacy DMGs
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for DMG in dist/*.dmg; do
+            if [ -f "$DMG" ]; then
+              echo "=== Notarizando: $DMG ==="
+              xcrun notarytool submit "$DMG" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" \
+                --wait --timeout 30m 2>&1
+              if [ $? -eq 0 ]; then
+                echo "✅ Notarizado! Stapling..."
+                xcrun stapler staple "$DMG"
+              else
+                echo "⚠️ Notarização falhou para $DMG"
+              fi
+            fi
+          done
+
+      - name: Upload legacy DMGs
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          echo "=== Build legacy para macOS 11+ ==="
-          ls -la dist/*.zip 2>/dev/null || true
+          echo "=== Upload legacy DMGs ==="
 
-          for ZIP in dist/*.zip; do
-            if [ -f "$ZIP" ]; then
-              NEWNAME="MultiPrime-V6-${TAG}-mac-legacy-macOS11.zip"
-              cp "$ZIP" "dist/$NEWNAME"
+          for DMG in dist/*.dmg; do
+            if [ -f "$DMG" ]; then
+              BASENAME=$(basename "$DMG" .dmg)
+              if echo "$BASENAME" | grep -q "arm64"; then
+                NEWNAME="MultiPrime-V6-${TAG}-legacy-macOS11-AppleSilicon.dmg"
+              else
+                NEWNAME="MultiPrime-V6-${TAG}-legacy-macOS11-Intel.dmg"
+              fi
+              cp "$DMG" "dist/$NEWNAME"
               echo "Uploading: $NEWNAME"
               gh release upload "$TAG" "dist/$NEWNAME" --clobber 2>/dev/null || true
               echo "✅ $NEWNAME uploaded"

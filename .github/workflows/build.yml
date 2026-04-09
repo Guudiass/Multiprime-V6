@@ -132,3 +132,54 @@ jobs:
               echo "✅ $FILENAME uploaded"
             fi
           done
+
+  # Build Mac Legacy (macOS 11 Big Sur) — Electron 28, sem notarizacao, .zip
+  build-mac-legacy:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Convert icon
+        run: |
+          if [ ! -f icon.png ] && [ -f icon.ico ]; then
+            sips -s format png icon.ico --out icon.png --resampleWidth 1024 2>/dev/null || true
+          fi
+
+      - name: Install Electron 28 (macOS 11 compat)
+        run: |
+          npm install
+          npm install electron@28 --save-dev --force
+
+      - name: Build Mac Legacy (unsigned zip)
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          # Buildar como zip (sem notarizacao, sem signing)
+          npx electron-builder --mac zip --publish never
+
+      - name: Rename and upload legacy build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "=== Build legacy para macOS 11+ ==="
+          ls -la dist/*.zip 2>/dev/null || true
+
+          for ZIP in dist/*.zip; do
+            if [ -f "$ZIP" ]; then
+              NEWNAME="MultiPrime-V6-${TAG}-mac-legacy-macOS11.zip"
+              cp "$ZIP" "dist/$NEWNAME"
+              echo "Uploading: $NEWNAME"
+              gh release upload "$TAG" "dist/$NEWNAME" --clobber 2>/dev/null || true
+              echo "✅ $NEWNAME uploaded"
+            fi
+          done

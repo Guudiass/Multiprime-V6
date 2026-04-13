@@ -29,7 +29,7 @@ function startApp() {
 
     // Habilitar features modernas do Chrome (necessario para sites como CapCut, Canva, etc.)
     app.commandLine.appendSwitch('enable-features',
-        'WebCodecs,WebGPU,SharedArrayBuffer,MediaSessionService,VaapiVideoDecoder,CanvasOopRasterization'
+        'WebCodecs,WebGPU,SharedArrayBuffer,OverrideSharedArrayBufferRestrictions,MediaSessionService,VaapiVideoDecoder,CanvasOopRasterization'
     );
     // Habilitar codecs proprietarios (H.264, AAC, etc.)
     app.commandLine.appendSwitch('enable-accelerated-video-decode');

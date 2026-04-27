@@ -9,31 +9,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # 1. Cria/reusa o release ANTES de qualquer build (1 ponto unico, sem race)
-  prepare-release:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Ensure release exists
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          if gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
-            echo "Release $TAG ja existe — reuse"
-          else
-            gh release create "$TAG" \
-              --repo ${{ github.repository }} \
-              --title "$TAG" \
-              --notes "Auto-build $TAG" \
-              --target ${{ github.sha }}
-            echo "Release $TAG criado"
-          fi
-
   build-win-linux:
-    needs: prepare-release
     strategy:
       fail-fast: false
       matrix:
@@ -70,29 +46,12 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # Buildar SEM publicar (--publish never) — evita o bug do electron-builder 25.x
-      # com 422 ao tentar criar release que ja existe
-      - name: Build (no publish)
-        run: npx electron-builder --${{ matrix.platform }} --publish never
-
-      - name: Upload assets via gh CLI
-        shell: bash
+      - name: Build and Publish
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          echo "=== Upload assets de $TAG (${{ matrix.platform }}) ==="
-          shopt -s nullglob
-          for file in dist/*.exe dist/*.msi dist/*.AppImage dist/*.deb dist/*.rpm dist/*.snap dist/*.zip dist/latest*.yml dist/*.blockmap; do
-            if [ -f "$file" ]; then
-              echo "Uploading: $(basename "$file")"
-              gh release upload "$TAG" "$file" --clobber --repo ${{ github.repository }}
-            fi
-          done
-          echo "✅ Upload completo (${{ matrix.platform }})"
+        run: npx electron-builder --${{ matrix.platform }} --publish always
 
   build-mac:
-    needs: prepare-release
     runs-on: macos-latest
     timeout-minutes: 60
 
@@ -114,11 +73,12 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build Mac (signed, no publish)
+      - name: Build Mac (signed)
         env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: npx electron-builder --mac --publish never
+        run: npx electron-builder --mac --publish always
 
       - name: Notarize DMGs
         env:
@@ -149,24 +109,32 @@ jobs:
             fi
           done
 
-      - name: Upload Mac assets via gh CLI
+      - name: Re-upload notarized DMGs to release
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          echo "=== Upload Mac assets de $TAG ==="
-          shopt -s nullglob
-          for file in dist/*.dmg dist/*.zip dist/latest-mac.yml dist/*.blockmap; do
-            if [ -f "$file" ]; then
-              echo "Uploading: $(basename "$file")"
-              gh release upload "$TAG" "$file" --clobber --repo ${{ github.repository }}
+          echo "=== Re-uploading DMGs notarizados para release $TAG ==="
+
+          for DMG in dist/*.dmg; do
+            if [ -f "$DMG" ]; then
+              FILENAME=$(basename "$DMG")
+              echo "Uploading: $FILENAME"
+
+              # Deletar asset antigo (nao notarizado)
+              ASSET_ID=$(gh release view "$TAG" --json assets -q ".assets[] | select(.name==\"$FILENAME\") | .id" 2>/dev/null || true)
+              if [ -n "$ASSET_ID" ]; then
+                gh api -X DELETE "/repos/${{ github.repository }}/releases/assets/$ASSET_ID" 2>/dev/null || true
+              fi
+
+              # Upload do notarizado
+              gh release upload "$TAG" "$DMG" --clobber 2>/dev/null || true
+              echo "✅ $FILENAME uploaded"
             fi
           done
-          echo "✅ Upload Mac completo"
 
   # Build Mac Legacy (macOS 11 Big Sur) — Electron 28, sem notarizacao, .zip
   build-mac-legacy:
-    needs: prepare-release
     runs-on: macos-latest
     timeout-minutes: 30
 
@@ -192,6 +160,7 @@ jobs:
 
       - name: Build Mac Legacy (signed DMG, x64 + arm64)
         env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: |
@@ -238,7 +207,7 @@ jobs:
               fi
               cp "$DMG" "dist/$NEWNAME"
               echo "Uploading: $NEWNAME"
-              gh release upload "$TAG" "dist/$NEWNAME" --clobber --repo ${{ github.repository }}
+              gh release upload "$TAG" "dist/$NEWNAME" --clobber 2>/dev/null || true
               echo "✅ $NEWNAME uploaded"
             fi
           done

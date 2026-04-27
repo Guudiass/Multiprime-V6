@@ -9,7 +9,32 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Cria o GitHub Release ANTES de qualquer build, como published (nao draft)
+  # Assim os jobs de build apenas fazem upload de assets — sem race de criacao
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create or reuse release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          if gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
+            echo "Release $TAG ja existe — reuse"
+          else
+            gh release create "$TAG" \
+              --repo ${{ github.repository }} \
+              --title "$TAG" \
+              --notes "Auto-build $TAG" \
+              --target ${{ github.sha }}
+            echo "Release $TAG criado (published)"
+          fi
+
   build-win-linux:
+    needs: create-release
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -53,7 +78,7 @@ jobs:
         run: npx electron-builder --${{ matrix.platform }} --publish always
 
   build-mac:
-    needs: build-win-linux
+    needs: [create-release, build-win-linux]
     runs-on: macos-latest
     timeout-minutes: 60
 

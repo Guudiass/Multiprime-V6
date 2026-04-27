@@ -56,7 +56,6 @@ async function switchToNextProxy(viewId) {
         if (key.startsWith(`${viewId}-`)) state.proxyAuthAttempts.delete(key);
     }
 
-    console.log(`[PROXY FALLBACK] ✅ View ${viewId} → fallback[${proxyState.currentIndex}]: ${nextProxy.host}:${nextProxy.port} (${nextProxy.tipo || 'http'})`);
     logEvent('proxy_fallback_success', { perfilId: proxyState.perfil?.id, viewId, proxy: `${nextProxy.host}:${nextProxy.port}`, index: proxyState.currentIndex });
     return true;
 }

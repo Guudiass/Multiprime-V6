@@ -51,6 +51,10 @@ function sanitizeCookieForInjection(cookie, defaultUrl) {
                 return null;
             }
         }
+    } else {
+        // Session cookie (sem expirationDate): converter para persistent (30 dias)
+        // Senao, sao apagados quando o browser fecha — perdemos auth de SPAs como Higgsfield
+        c.expirationDate = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
     }
 
     return c;

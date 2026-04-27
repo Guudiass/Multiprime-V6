@@ -12,7 +12,6 @@ function sendToLovable(channel, data) {
 function logEvent(type, data) {
     const event = { type, timestamp: Date.now(), ...data };
     sendToLovable('mp-event-log', event);
-    console.log(`[EVENT] ${type}`, JSON.stringify(data || {}));
 }
 
 function startHeartbeat() {

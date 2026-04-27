@@ -16,8 +16,6 @@ async function solveTurnstile(websiteURL, websiteKey, proxyInfo) {
         return null;
     }
 
-    const keyPreview = state.CAPSOLVER_API_KEY.substring(0, 10) + '...';
-    console.log(`[CAPSOLVER] Iniciando: key=${keyPreview} url=${websiteURL} sitekey=${websiteKey.substring(0, 20)}...`);
 
     // Tipos de task para tentar (Turnstile primeiro, Challenge como fallback)
     // AntiTurnstileTaskProxyLess: widget Turnstile (sem proxy)
@@ -47,7 +45,6 @@ async function solveTurnstile(websiteURL, websiteKey, proxyInfo) {
             })
         });
     } else {
-        console.log('[CAPSOLVER] Sem proxy disponível — AntiCloudflareTask não será tentado');
     }
 
     let createResp = null;
@@ -65,7 +62,6 @@ async function solveTurnstile(websiteURL, websiteKey, proxyInfo) {
                 // Sucesso
                 if (createResp && createResp.taskId) {
                     createResp._usedType = taskType.type;
-                    console.log(`[CAPSOLVER] Task criada (${taskType.label}): ${createResp.taskId} (tentativa ${attempt})`);
                     succeeded = true;
                     break;
                 }
@@ -77,7 +73,6 @@ async function solveTurnstile(websiteURL, websiteKey, proxyInfo) {
                 // Sitekey é challenge, não turnstile → pular para o próximo tipo
                 if (createResp?.errorDescription?.includes('not turnstile') ||
                     createResp?.errorDescription?.includes('not challenge')) {
-                    console.log(`[CAPSOLVER] Tipo errado (${taskType.label}), tentando próximo tipo...`);
                     break;
                 }
 
@@ -92,7 +87,6 @@ async function solveTurnstile(websiteURL, websiteKey, proxyInfo) {
 
                 // Task data invalida → tentar proximo tipo
                 if (createResp?.errorCode === 'ERROR_INVALID_TASK_DATA') {
-                    console.log(`[CAPSOLVER] Task data inválida para ${taskType.label}, tentando próximo tipo...`);
                     break;
                 }
 
@@ -138,24 +132,19 @@ async function solveTurnstile(websiteURL, websiteKey, proxyInfo) {
                 const userAgent = solution.userAgent;
                 const elapsed = ((i + 1) * POLL_INTERVAL_MS / 1000).toFixed(0);
 
-                console.log(`[CAPSOLVER] Solution recebida (${elapsed}s):`, JSON.stringify({ type: isChallenge ? 'Challenge' : 'Turnstile', hasToken: !!token, hasCfClearance: !!cfClearance, hasUA: !!userAgent }));
-
                 // Challenge: priorizar cf_clearance, mas aceitar token tambem
                 if (isChallenge) {
                     if (cfClearance) {
-                        console.log(`[CAPSOLVER] ✅ cf_clearance obtido (${elapsed}s)`);
                         return { type: 'cf_clearance', cfClearance, userAgent };
                     }
                     if (token) {
                         // Challenge retornou token — tratar como cf_clearance (o token E o clearance em alguns casos)
-                        console.log(`[CAPSOLVER] ✅ Challenge token como cf_clearance (${elapsed}s)`);
                         return { type: 'cf_clearance', cfClearance: token, userAgent };
                     }
                 }
 
                 // Turnstile: retornar token
                 if (token) {
-                    console.log(`[CAPSOLVER] ✅ Token obtido (${elapsed}s)`);
                     return { type: 'token', token };
                 }
 

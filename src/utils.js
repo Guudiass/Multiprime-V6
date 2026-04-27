@@ -98,6 +98,8 @@ async function limparParticoesAntigas() {
     try {
         if (!fs.existsSync(partitionsPath)) return;
         const items = await fsPromises.readdir(partitionsPath);
+        // Apaga TODAS as particoes profile_* no startup (sem dependencia local)
+        // Tudo na nuvem (GitHub) e a fonte unica de verdade
         const deletePromises = items
             .filter(item => item.startsWith('profile_'))
             .map(item => fsPromises.rm(path.join(partitionsPath, item), { recursive: true, force: true }));

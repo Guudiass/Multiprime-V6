@@ -637,8 +637,11 @@
     <div class="status-dot" id="status-dot"></div>
   </div>
 
-  <!-- Downloads -->
+  <!-- Downloads + Export (G0) -->
   <div class="actions-group">
+    <button class="downloads-btn" id="btn-export-cookies" title="Exportar cookies (G0)" style="display:none;">
+      &#x1F4BE; Exportar
+    </button>
     <button class="downloads-btn" id="btn-downloads">
       &#8595; Downloads
       <span class="downloads-badge" id="downloads-badge">0</span>
@@ -681,6 +684,29 @@
   // ===== ABAS =====
   const tabBar = document.getElementById('tab-bar-tabs');
   let activeTabIdLocal = null;
+  const tabUserGroups = new Map(); // tabId -> userGroup
+  const btnExportCookies = document.getElementById('btn-export-cookies');
+
+  function updateExportButtonVisibility() {
+    if (!activeTabIdLocal) {
+      btnExportCookies.style.display = 'none';
+      return;
+    }
+    var group = tabUserGroups.get(activeTabIdLocal);
+    btnExportCookies.style.display = (group === 'G0') ? '' : 'none';
+  }
+
+  btnExportCookies.addEventListener('click', function() {
+    if (!activeTabIdLocal) return;
+    btnExportCookies.disabled = true;
+    btnExportCookies.textContent = '\u23F3 Exportando...';
+    // Pegar localStorage/sessionStorage da aba ativa via o preload-secure
+    api.exportSession({});
+    setTimeout(function() {
+      btnExportCookies.disabled = false;
+      btnExportCookies.innerHTML = '\u{1F4BE} Exportar';
+    }, 5000);
+  });
 
   function createTabElement(data) {
     const tab = document.createElement('div');
@@ -722,12 +748,15 @@
 
   api.onTabAdded(function(data) {
     tabBar.appendChild(createTabElement(data));
+    if (data.userGroup) tabUserGroups.set(data.tabId, data.userGroup);
     if (data.isActive) setActiveTabLocal(data.tabId);
+    updateExportButtonVisibility();
   });
 
   api.onTabRemoved(function(tabId) {
     const el = tabBar.querySelector('[data-tab-id="' + tabId + '"]');
     if (el) el.remove();
+    tabUserGroups.delete(tabId);
   });
 
   api.onTabActivated(function(data) {
@@ -759,6 +788,7 @@
     for (var i = 0; i < allTabs.length; i++) {
       allTabs[i].classList.toggle('active', allTabs[i].getAttribute('data-tab-id') === tabId);
     }
+    updateExportButtonVisibility();
   }
 
   // ===== ELEMENTOS =====

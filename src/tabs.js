@@ -52,22 +52,80 @@ function createBrowserWindow() {
         handleTabShortcut(event, input);
     });
 
-    win.on('close', () => {
-        for (const [tabId, tab] of state.tabs) {
-            sendToLovable('mp-tab-closed', { tabId, perfilId: tab.perfil?.id });
+    let isExportingOnClose = false;
+    win.on('close', (e) => {
+        const allTabs = Array.from(state.tabs.values());
+
+        // SO exporta tabs com tokenRotation=true (sites como Higgsfield)
+        // Outros sites: confiam apenas no gatilho 4h ao abrir
+        const tabsToExport = allTabs.filter(t =>
+            !t._closing && t.perfil?.ftp && t.perfil?.senha && t.perfil?.tokenRotation === true
+        );
+
+        if (!isExportingOnClose && tabsToExport.length > 0 && state.autoExportSession) {
+            e.preventDefault();
+            isExportingOnClose = true;
+
+            for (const t of allTabs) t._closing = true;
+
+            try { win.hide(); } catch {}
+
+            try {
+                for (const t of allTabs) {
+                    sendToLovable('mp-tab-closed', { tabId: t.tabId, perfilId: t.perfil?.id });
+                }
+                sendToLovable('mp-app-closing', { tabCount: allTabs.length, timestamp: Date.now() });
+            } catch {}
+
+            (async () => {
+                for (const t of tabsToExport) {
+                    try {
+                        if (t.view && t.view.webContents && !t.view.webContents.isDestroyed()) {
+                            await state.autoExportSession({ view: t.view, perfil: t.perfil });
+                        }
+                    } catch (err) {
+                        console.error(`[AUTO-EXPORT] Erro em ${t.perfil?.ftp}:`, err.message);
+                    }
+                }
+            })().finally(() => {
+                if (!win.isDestroyed()) {
+                    try { win.destroy(); } catch {}
+                }
+            });
+
+            setTimeout(() => {
+                if (!win.isDestroyed()) {
+                    try { win.destroy(); } catch {}
+                }
+            }, 30000);
+            return;
         }
-        sendToLovable('mp-app-closing', { tabCount: state.tabs.size, timestamp: Date.now() });
+
+        // Sem tabs para exportar (todas dentro do throttle): fecha imediato
+        try {
+            for (const t of allTabs) {
+                sendToLovable('mp-tab-closed', { tabId: t.tabId, perfilId: t.perfil?.id });
+            }
+            sendToLovable('mp-app-closing', { tabCount: allTabs.length, timestamp: Date.now() });
+        } catch {}
     });
 
     win.on('closed', () => {
-        for (const [tabId, tab] of state.tabs) {
-            const viewId = tab.view.webContents.id;
-            state.proxyCredentials.delete(viewId);
-            state.proxyFallbackState.delete(viewId);
-            for (const [key] of state.proxyAuthAttempts) {
-                if (key.startsWith(`${viewId}-`)) state.proxyAuthAttempts.delete(key);
+        // Cleanup robusto — pode ser chamado mesmo se ja foi limpo
+        try {
+            for (const [, tab] of state.tabs) {
+                try {
+                    if (tab.view && tab.view.webContents && !tab.view.webContents.isDestroyed()) {
+                        const viewId = tab.view.webContents.id;
+                        state.proxyCredentials.delete(viewId);
+                        state.proxyFallbackState.delete(viewId);
+                        for (const [key] of state.proxyAuthAttempts) {
+                            if (key.startsWith(`${viewId}-`)) state.proxyAuthAttempts.delete(key);
+                        }
+                    }
+                } catch {}
             }
-        }
+        } catch {}
         state.tabs.clear();
         state.perfilIdToTab.clear();
         state.activeTabId = null;
@@ -479,13 +537,109 @@ function createTab(perfil, isolatedSession, storageData) {
         view.webContents.on('did-navigate', sendCredentials);
     }
 
-    // Session data injection
+    // Session data injection (apos primeiro request do preload)
     view.webContents.ipc.once('request-session-data', (e) => {
         e.sender.send('inject-session-data', storageData);
     });
     view.webContents.ipc.once('get-initial-session-data', (e) => {
         e.returnValue = storageData || null;
     });
+
+    // FORCA injecao de localStorage/sessionStorage/IndexedDB via executeJavaScript
+    let storageInjected = false;
+    const injectStorageForced = async () => {
+        if (storageInjected) return; // so injeta uma vez por aba
+        if (!storageData || !view.webContents || view.webContents.isDestroyed()) return;
+        if (!storageData.localStorage && !storageData.sessionStorage && !storageData.indexedDB) return;
+
+        try {
+            const ls = JSON.stringify(storageData.localStorage || {});
+            const ss = JSON.stringify(storageData.sessionStorage || {});
+            const idb = JSON.stringify(storageData.indexedDB || {});
+
+            await view.webContents.executeJavaScript(`
+                (async function() {
+                    try {
+                        var ls = ${ls};
+                        var ss = ${ss};
+                        var idb = ${idb};
+
+                        // localStorage (sempre sobrescreve — garante dados frescos)
+                        for (var k in ls) {
+                            try { localStorage.setItem(k, ls[k]); } catch(e) {}
+                        }
+                        // sessionStorage
+                        for (var k in ss) {
+                            try { sessionStorage.setItem(k, ss[k]); } catch(e) {}
+                        }
+
+                        // IndexedDB — restaurar DBs e object stores
+                        for (var dbName in idb) {
+                            try {
+                                var dbData = idb[dbName];
+                                var dbVersion = dbData.version || 1;
+                                await new Promise(function(resolve) {
+                                    var req = indexedDB.open(dbName, dbVersion);
+                                    req.onupgradeneeded = function(e) {
+                                        var db = e.target.result;
+                                        for (var storeName in dbData.stores) {
+                                            if (!db.objectStoreNames.contains(storeName)) {
+                                                var storeOpts = dbData.stores[storeName];
+                                                try {
+                                                    db.createObjectStore(storeName, {
+                                                        keyPath: storeOpts.keyPath,
+                                                        autoIncrement: storeOpts.autoIncrement || false
+                                                    });
+                                                } catch(e) {}
+                                            }
+                                        }
+                                    };
+                                    req.onsuccess = function() {
+                                        var db = req.result;
+                                        try {
+                                            var storeNames = Array.from(db.objectStoreNames);
+                                            if (storeNames.length === 0) { db.close(); resolve(); return; }
+                                            var tx = db.transaction(storeNames, 'readwrite');
+                                            var pending = 0;
+                                            for (var i = 0; i < storeNames.length; i++) {
+                                                (function(storeName) {
+                                                    var storeData = dbData.stores[storeName];
+                                                    if (!storeData || !storeData.entries) return;
+                                                    try {
+                                                        var store = tx.objectStore(storeName);
+                                                        for (var j = 0; j < storeData.entries.length; j++) {
+                                                            pending++;
+                                                            var entry = storeData.entries[j];
+                                                            var putReq = store.put(entry.value, entry.key);
+                                                            putReq.onsuccess = putReq.onerror = function() {
+                                                                pending--;
+                                                            };
+                                                        }
+                                                    } catch(e) {}
+                                                })(storeNames[i]);
+                                            }
+                                            tx.oncomplete = function() { db.close(); resolve(); };
+                                            tx.onerror = function() { db.close(); resolve(); };
+                                            setTimeout(function() { try { db.close(); } catch(e) {} resolve(); }, 5000);
+                                        } catch(e) {
+                                            try { db.close(); } catch(ee) {}
+                                            resolve();
+                                        }
+                                    };
+                                    req.onerror = function() { resolve(); };
+                                    setTimeout(resolve, 5000);
+                                });
+                            } catch(e) {}
+                        }
+                    } catch(e) {}
+                })();
+            `);
+            storageInjected = true;
+        } catch {}
+    };
+
+    view.webContents.on('dom-ready', injectStorageForced);
+    view.webContents.on('did-finish-load', injectStorageForced);
 
     // Downloads
     setupDownloadManager(view, isolatedSession);
@@ -500,10 +654,80 @@ function createTab(perfil, isolatedSession, storageData) {
     });
 
     // Notificar toolbar e Lovable
-    sendToToolbar('tab-added', { tabId, title: tabEntry.title, favicon: null, isActive: true });
+    const isWarming = perfil?.tokenRotation === true;
+    tabEntry._warming = isWarming;
+
+    sendToToolbar('tab-added', {
+        tabId,
+        title: isWarming ? 'Preparando sessao...' : tabEntry.title,
+        favicon: null,
+        isActive: true,
+        userGroup: perfil.userGroup || null
+    });
     sendToLovable('mp-tab-opened', { tabId, perfilId: perfil.id, url: perfil.link, title: tabEntry.title });
 
-    activateTab(tabId);
+    if (!isWarming) {
+        activateTab(tabId);
+    } else {
+        // Cria view de SPLASH visivel enquanto a view real faz pre-aquecimento oculto
+        const splashView = new BrowserView({
+            webPreferences: { contextIsolation: true, nodeIntegration: false }
+        });
+        const isDark = state.currentTema === 'dark';
+        const bgColor = isDark ? '#181818' : '#f5f5f5';
+        const textColor = isDark ? '#ecf0f1' : '#1a1a1a';
+        const accentColor = '#3b82f6';
+        const splashHtml = `
+            <html>
+            <head>
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    html, body {
+                        width: 100%; height: 100%;
+                        background: ${bgColor}; color: ${textColor};
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                        display: flex; align-items: center; justify-content: center;
+                        flex-direction: column; gap: 20px;
+                        overflow: hidden;
+                    }
+                    .spinner {
+                        width: 48px; height: 48px;
+                        border: 3px solid ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'};
+                        border-top-color: ${accentColor};
+                        border-radius: 50%;
+                        animation: spin 0.8s linear infinite;
+                    }
+                    .title { font-size: 16px; font-weight: 500; opacity: 0.9; }
+                    .subtitle { font-size: 13px; opacity: 0.5; }
+                    @keyframes spin { to { transform: rotate(360deg); } }
+                </style>
+            </head>
+            <body>
+                <div class="spinner"></div>
+                <div class="title">Preparando sessao</div>
+                <div class="subtitle">${(perfil.link ? new URL(perfil.link).hostname : 'Carregando')}</div>
+            </body>
+            </html>
+        `;
+        splashView.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(splashHtml));
+        tabEntry._splashView = splashView;
+
+        // Mostrar a splash no lugar da view real
+        if (state.browserWindow && !state.browserWindow.isDestroyed()) {
+            state.activeTabId = tabId;
+            state.browserWindow.setBrowserView(splashView);
+            const { getViewBounds } = require('./utils');
+            splashView.setBounds(getViewBounds(state.browserWindow, false));
+            splashView.setAutoResize({ width: true, height: true });
+            // Notificar toolbar que a aba esta ativa visualmente
+            state.browserWindow.webContents.send('tab-activated', { tabId });
+            state.browserWindow.webContents.send('url-updated', perfil.link || '');
+            state.browserWindow.webContents.send('page-loading', true);
+        }
+
+        // View real fica oculta
+        view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    }
 
     // Restaurar e focar a janela para o usuario ver que a ferramenta abriu
     if (state.browserWindow && !state.browserWindow.isDestroyed()) {
@@ -517,12 +741,35 @@ function createTab(perfil, isolatedSession, storageData) {
 
 /**
  * Ativa uma aba (mostra sua BrowserView).
+ * Se a aba tinha splash de pre-aquecimento, destroi a splash e mostra a view real.
  */
 function activateTab(tabId) {
     const tab = state.tabs.get(tabId);
     if (!tab || !state.browserWindow || state.browserWindow.isDestroyed()) return;
 
     state.activeTabId = tabId;
+
+    // Limpar splash de pre-aquecimento se existir (transicao warming → ready)
+    if (tab._splashView) {
+        try {
+            state.browserWindow.removeBrowserView(tab._splashView);
+        } catch {}
+        try {
+            if (tab._splashView.webContents && !tab._splashView.webContents.isDestroyed()) {
+                tab._splashView.webContents.destroy();
+            }
+        } catch {}
+        tab._splashView = null;
+        tab._warming = false;
+
+        // Atualizar titulo na toolbar (estava "Preparando sessao...")
+        try {
+            const realTitle = tab.title || (tab.url ? new URL(tab.url).hostname : 'Aba');
+            state.browserWindow.webContents.send('tab-updated', {
+                tabId, title: realTitle, favicon: tab.favicon, url: tab.url
+            });
+        } catch {}
+    }
 
     state.browserWindow.setBrowserView(tab.view);
     tab.view.setBounds(getViewBounds(state.browserWindow, tab.downloadsPanelOpen));
@@ -534,42 +781,88 @@ function activateTab(tabId) {
 }
 
 /**
- * Fecha uma aba.
+ * Fecha uma aba — UI imediata, export+cleanup em background.
+ * Idempotente (chamado 2x para mesmo tabId nao quebra).
  */
 function closeTab(tabId) {
     const tab = state.tabs.get(tabId);
     if (!tab) return;
 
+    // Marca como "fechando" — evita race condition (botao clicado 2x, etc.)
+    if (tab._closing) return;
+    tab._closing = true;
+
+    // Se for a ultima aba, fechar a janela inteira (window close cuida do export)
     if (state.tabs.size === 1) {
-        if (state.browserWindow && !state.browserWindow.isDestroyed()) state.browserWindow.close();
+        if (state.browserWindow && !state.browserWindow.isDestroyed()) {
+            try { state.browserWindow.close(); } catch {}
+        }
         return;
     }
 
-    if (state.activeTabId === tabId) {
-        const tabIds = Array.from(state.tabs.keys());
-        const idx = tabIds.indexOf(tabId);
-        const nextIdx = idx < tabIds.length - 1 ? idx + 1 : idx - 1;
-        activateTab(tabIds[nextIdx]);
+    // Capturar refs antes de mexer no state (evita undefined depois)
+    const view = tab.view;
+    const perfil = tab.perfil;
+    const viewId = (view && view.webContents && !view.webContents.isDestroyed()) ? view.webContents.id : null;
+    const isActive = state.activeTabId === tabId;
+
+    // 1. UI: ativar aba adjacente se estava ativa (instantaneo)
+    if (isActive) {
+        const otherTabIds = Array.from(state.tabs.keys()).filter(id => id !== tabId);
+        if (otherTabIds.length > 0) {
+            try { activateTab(otherTabIds[0]); } catch {}
+        }
     }
 
-    const viewId = tab.view.webContents.id;
-    if (state.browserWindow && !state.browserWindow.isDestroyed()) {
-        state.browserWindow.removeBrowserView(tab.view);
+    // 2. UI: remove BrowserView e notifica toolbar (instantaneo)
+    if (state.browserWindow && !state.browserWindow.isDestroyed() && view) {
+        try { state.browserWindow.removeBrowserView(view); } catch {}
+        // Tambem limpar splash se a aba ainda estava em warming
+        if (tab._splashView) {
+            try { state.browserWindow.removeBrowserView(tab._splashView); } catch {}
+            try {
+                if (tab._splashView.webContents && !tab._splashView.webContents.isDestroyed()) {
+                    tab._splashView.webContents.destroy();
+                }
+            } catch {}
+            tab._splashView = null;
+        }
+        try { state.browserWindow.webContents.send('tab-removed', tabId); } catch {}
     }
-    try { tab.view.webContents.destroy(); } catch {}
-    state.proxyCredentials.delete(viewId);
-    state.proxyFallbackState.delete(viewId);
-    for (const [key] of state.proxyAuthAttempts) {
-        if (key.startsWith(`${viewId}-`)) state.proxyAuthAttempts.delete(key);
-    }
-    if (tab.perfil?.id) state.perfilIdToTab.delete(tab.perfil.id);
+    try { sendToLovable('mp-tab-closed', { tabId, perfilId: perfil?.id }); } catch {}
+
+    // 3. Remove do state imediatamente (evita reabrir/clicar acidental)
+    if (perfil?.id) state.perfilIdToTab.delete(perfil.id);
     state.tabs.delete(tabId);
+    if (state.activeTabId === tabId) state.activeTabId = null;
 
-    if (state.browserWindow && !state.browserWindow.isDestroyed()) {
-        state.browserWindow.webContents.send('tab-removed', tabId);
-    }
-
-    sendToLovable('mp-tab-closed', { tabId, perfilId: tab.perfil?.id });
+    // 4. Background: auto-export + cleanup
+    (async () => {
+        try {
+            // SO exporta ao fechar se tokenRotation=true (sites como Higgsfield)
+            // Sites normais usam apenas o gatilho 4h ao abrir
+            if (state.autoExportSession && perfil?.tokenRotation === true &&
+                perfil?.ftp && perfil?.senha &&
+                view && view.webContents && !view.webContents.isDestroyed()) {
+                await state.autoExportSession({ view, perfil });
+            }
+        } catch (err) {
+            console.error('[CLOSE-TAB] Auto-export erro:', err.message);
+        } finally {
+            if (viewId !== null) {
+                state.proxyCredentials.delete(viewId);
+                state.proxyFallbackState.delete(viewId);
+                for (const [key] of state.proxyAuthAttempts) {
+                    if (key.startsWith(`${viewId}-`)) state.proxyAuthAttempts.delete(key);
+                }
+            }
+            try {
+                if (view && view.webContents && !view.webContents.isDestroyed()) {
+                    view.webContents.destroy();
+                }
+            } catch {}
+        }
+    })();
 }
 
 module.exports = {

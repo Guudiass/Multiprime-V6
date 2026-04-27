@@ -1,9 +1,42 @@
-node_modules/ 
-dist/ 
-*.cer 
-*.crt 
-*.csr 
-*.key 
-*.p12 
-multiprime-base64.txt 
-package-lock.json 
+# Dependencias e build
+node_modules/
+dist/
+out/
+build/
+
+# Lock file (voce ja excluia)
+package-lock.json
+
+# Certificados (NUNCA commitar)
+*.cer
+*.crt
+*.csr
+*.key
+*.p12
+*.pfx
+multiprime-base64.txt
+
+# Variaveis de ambiente / secrets
+.env
+.env.*
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Claude Code (config local)
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Electron-builder cache
+.cache/

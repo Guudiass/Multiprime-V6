@@ -4,6 +4,11 @@ name: Build and Release
 # Este workflow roda no repo PUBLICO (onde estao os secrets), faz checkout do privado,
 # builda e publica as releases AQUI (publish do package.json -> Guudiass/Multiprime-V6).
 # Disparo MANUAL: aba Actions -> "Build and Release" -> Run workflow.
+#
+# >>> CORRECAO IMPORTANTE <<<
+# Como o checkout agora eh do repo PRIVADO (-src), o `gh` CLI infere o repo ERRADO
+# (o -src, que NAO tem releases). Por isso TODO `gh release ...` precisa de
+# --repo "${{ github.repository }}" (= este repo publico, onde a release existe).
 on:
   workflow_dispatch:
 
@@ -90,7 +95,14 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: npx electron-builder --mac --publish always
 
-      - name: Notarize DMGs
+      # Submete os DMGs ao notarytool = REGISTRA na Apple (notarizacao "online": o Gatekeeper
+      # reconhece via internet). NAO fazemos staple + re-upload do DMG moderno DE PROPOSITO:
+      # o staple mudaria o sha512 do DMG, e o latest-mac.yml (gerado ANTES, pelo electron-builder)
+      # ficaria invalido -> quebraria o auto-update do app. O DMG que o electron-builder ja
+      # publicou eh EXATAMENTE o que foi submetido -> fica notarizado E consistente com o yml.
+      # (Se um dia quiser staple no DMG moderno, o jeito certo eh notarizacao NATIVA do
+      #  electron-builder, que staplea o .app ANTES de gerar o yml.)
+      - name: Notarize DMGs (registro online na Apple)
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -98,55 +110,23 @@ jobs:
         run: |
           echo "=== DMGs encontrados ==="
           ls -la dist/*.dmg 2>/dev/null || true
-
           for DMG in dist/*.dmg; do
             if [ -f "$DMG" ]; then
-              echo ""
-              echo "=== Notarizando: $DMG ==="
+              echo "=== Notarizando (registro): $DMG ==="
               xcrun notarytool submit "$DMG" \
                 --apple-id "$APPLE_ID" \
                 --password "$APPLE_APP_SPECIFIC_PASSWORD" \
                 --team-id "$APPLE_TEAM_ID" \
-                --wait --timeout 30m 2>&1
-
-              if [ $? -eq 0 ]; then
-                echo "✅ Notarizado! Stapling..."
-                xcrun stapler staple "$DMG"
-                echo "✅ Stapled: $DMG"
-              else
-                echo "⚠️ Notarização falhou para $DMG (continuando...)"
-              fi
+                --wait --timeout 30m
             fi
           done
 
-      - name: Re-upload notarized DMGs to release
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          TAG=v$(node -p "require('./package.json').version")
-          echo "=== Re-uploading DMGs notarizados para release $TAG ==="
-
-          for DMG in dist/*.dmg; do
-            if [ -f "$DMG" ]; then
-              FILENAME=$(basename "$DMG")
-              echo "Uploading: $FILENAME"
-
-              # Deletar asset antigo (nao notarizado)
-              ASSET_ID=$(gh release view "$TAG" --json assets -q ".assets[] | select(.name==\"$FILENAME\") | .id" 2>/dev/null || true)
-              if [ -n "$ASSET_ID" ]; then
-                gh api -X DELETE "/repos/${{ github.repository }}/releases/assets/$ASSET_ID" 2>/dev/null || true
-              fi
-
-              # Upload do notarizado
-              gh release upload "$TAG" "$DMG" --clobber 2>/dev/null || true
-              echo "✅ $FILENAME uploaded"
-            fi
-          done
-
-  # Build Mac Legacy (macOS 11 Big Sur) — Electron 28, sem notarizacao, .zip
+  # Build Mac Legacy (macOS 11 Big Sur / Monterey) — Electron 22, DMG assinado + notarizado + STAPLED.
+  # Os DMGs legacy NAO entram no latest-mac.yml (sao downloads avulsos do site), entao
+  # podem ser stapled sem quebrar nada.
   build-mac-legacy:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout (codigo privado Multiprime-V6-src)
@@ -194,23 +174,30 @@ jobs:
                 --apple-id "$APPLE_ID" \
                 --password "$APPLE_APP_SPECIFIC_PASSWORD" \
                 --team-id "$APPLE_TEAM_ID" \
-                --wait --timeout 30m 2>&1
-              if [ $? -eq 0 ]; then
-                echo "✅ Notarizado! Stapling..."
-                xcrun stapler staple "$DMG"
-              else
-                echo "⚠️ Notarização falhou para $DMG"
-              fi
+                --wait --timeout 30m
+              echo "Stapling..."
+              xcrun stapler staple "$DMG"
             fi
           done
 
+      # CORRIGIDO: --repo aponta pro repo PUBLICO (senao o gh tenta no -src privado e falha).
+      # Removido o "2>/dev/null || true" + o echo "✅" mentiroso: agora, se o upload falhar,
+      # o job fica VERMELHO (visivel) em vez de fingir sucesso.
       - name: Upload legacy DMGs
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           TAG=v$(node -p "require('./package.json').version")
-          echo "=== Upload legacy DMGs ==="
 
+          # Espera a release existir (criada por outro job via --publish always) — evita race.
+          for i in $(seq 1 30); do
+            if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+              echo "Release $TAG encontrada."; break
+            fi
+            echo "Aguardando release $TAG existir... ($i/30)"; sleep 10
+          done
+
+          echo "=== Upload legacy DMGs para $TAG (repo ${{ github.repository }}) ==="
           for DMG in dist/*.dmg; do
             if [ -f "$DMG" ]; then
               BASENAME=$(basename "$DMG" .dmg)
@@ -221,7 +208,7 @@ jobs:
               fi
               cp "$DMG" "dist/$NEWNAME"
               echo "Uploading: $NEWNAME"
-              gh release upload "$TAG" "dist/$NEWNAME" --clobber 2>/dev/null || true
-              echo "✅ $NEWNAME uploaded"
+              gh release upload "$TAG" "dist/$NEWNAME" --repo "${{ github.repository }}" --clobber
+              echo "OK enviado: $NEWNAME"
             fi
           done
